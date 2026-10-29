@@ -1,6 +1,6 @@
 //! Right side: tab bar, toolbar, terminal and status bar for the selected project.
 
-use super::{dot, pill, pill_width, ACCENT, BAD, BG, DIM, FG, IDLE, LINE, OK, SIDE, WARN};
+use super::{dot, pill, pill_width, pal};
 use crate::app::{Action, App, Connection};
 use tm_core::protocol::Status;
 use crate::term::TerminalView;
@@ -9,20 +9,20 @@ use uuid::Uuid;
 
 pub fn status_color(s: &Status) -> egui::Color32 {
     match s {
-        Status::Running => OK,
-        s if s.is_error() => BAD,
-        _ => IDLE,
+        Status::Running => pal::ok(),
+        s if s.is_error() => pal::bad(),
+        _ => pal::idle(),
     }
 }
 
 pub fn show(app: &mut App, ui: &mut Ui) {
-    CentralPanel::no_frame().frame(Frame::new().fill(BG)).show(ui, |ui| {
+    CentralPanel::no_frame().frame(Frame::new().fill(pal::bg())).show(ui, |ui| {
         if let Some(msg) = app.banner.clone() {
             Panel::top("banner")
-                .frame(Frame::new().fill(WARN.gamma_multiply(0.18)).inner_margin(Margin::symmetric(14, 8)))
+                .frame(Frame::new().fill(pal::warn().gamma_multiply(0.18)).inner_margin(Margin::symmetric(14, 8)))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(msg).color(WARN));
+                        ui.label(RichText::new(msg).color(pal::warn()));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui.button("Dismiss").clicked() {
                                 app.push(Action::DismissBanner);
@@ -40,10 +40,10 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         };
         if let Some((msg, denied)) = connection {
             Panel::top("connection")
-                .frame(Frame::new().fill(BAD.gamma_multiply(0.16)).inner_margin(Margin::symmetric(14, 8)))
+                .frame(Frame::new().fill(pal::bad().gamma_multiply(0.16)).inner_margin(Margin::symmetric(14, 8)))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(msg).color(FG));
+                        ui.label(RichText::new(msg).color(pal::fg()));
                         if denied && cfg!(windows) {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if ui.button("Restart as administrator").clicked() {
@@ -81,20 +81,20 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 .resizable(true)
                 .default_size(width * 0.45)
                 .size_range(280.0..=(width - 280.0).max(300.0))
-                .frame(Frame::new().fill(BG).stroke(Stroke::new(1.0, LINE)))
+                .frame(Frame::new().fill(pal::bg()).stroke(Stroke::new(1.0, pal::line())))
                 .show(ui, |ui| super::dev::panel(app, ui, pid));
         }
 
-        Panel::top("tabs").frame(Frame::new().fill(SIDE)).show(ui, |ui| tab_bar(app, ui, pid, tid));
+        Panel::top("tabs").frame(Frame::new().fill(pal::side())).show(ui, |ui| tab_bar(app, ui, pid, tid));
         Panel::bottom("statusbar")
-            .frame(Frame::new().fill(SIDE).inner_margin(Margin::symmetric(14, 4)).stroke(Stroke::new(1.0, LINE)))
+            .frame(Frame::new().fill(pal::side()).inner_margin(Margin::symmetric(14, 4)).stroke(Stroke::new(1.0, pal::line())))
             .show(ui, |ui| status_bar(app, ui, pid));
 
         let Some(tid) = tid else {
             CentralPanel::no_frame().show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(ui.available_height() / 3.0);
-                    ui.label(RichText::new("This project has no terminals yet.").color(DIM));
+                    ui.label(RichText::new("This project has no terminals yet.").color(pal::dim()));
                     ui.add_space(6.0);
                     if ui.button("+ New terminal").clicked() {
                         app.push(Action::NewTerminal(pid));
@@ -105,25 +105,25 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         };
 
         Panel::top("toolbar")
-            .frame(Frame::new().fill(BG).inner_margin(Margin::symmetric(14, 6)).stroke(Stroke::new(1.0, LINE)))
+            .frame(Frame::new().fill(pal::bg()).inner_margin(Margin::symmetric(14, 6)).stroke(Stroke::new(1.0, pal::line())))
             .show(ui, |ui| toolbar(app, ui, pid, tid));
 
-        CentralPanel::no_frame().frame(Frame::new().fill(BG)).show(ui, |ui| terminal_area(app, ui, pid, tid));
+        CentralPanel::no_frame().frame(Frame::new().fill(pal::bg())).show(ui, |ui| terminal_area(app, ui, pid, tid));
     });
 }
 
 fn welcome(app: &mut App, ui: &mut Ui) {
     ui.vertical_centered(|ui| {
         ui.add_space(ui.available_height() / 4.0);
-        ui.label(RichText::new("Terminal Manager").size(26.0).color(FG));
+        ui.label(RichText::new("Terminal Manager").size(26.0).color(pal::fg()));
         ui.add_space(6.0);
         if !app.is_connected() {
-            ui.label(RichText::new("Waiting for the background host…").color(DIM));
+            ui.label(RichText::new("Waiting for the background host…").color(pal::dim()));
             return;
         }
         ui.label(
             RichText::new("Add a project folder, give it the terminals you run there, and they come back after every restart.")
-                .color(DIM),
+                .color(pal::dim()),
         );
         ui.add_space(14.0);
         if ui.button(RichText::new("+ Add project").size(15.0)).clicked() {
@@ -151,7 +151,7 @@ fn tab_bar(app: &mut App, ui: &mut Ui, pid: Uuid, active: Option<Uuid>) {
                 tab(app, ui, pid, tid, &name, &status, unseen, kind, active == Some(tid));
             }
             ui.add_space(4.0);
-            let plus = ui.add(egui::Button::new(RichText::new("+").size(16.0).color(DIM)).frame(false).min_size(egui::vec2(36.0, 36.0)));
+            let plus = ui.add(egui::Button::new(RichText::new("+").size(16.0).color(pal::dim())).frame(false).min_size(egui::vec2(36.0, 36.0)));
             if plus.on_hover_text("New terminal (Ctrl+Shift+T)").clicked() {
                 app.push(Action::NewTerminal(pid));
             }
@@ -177,12 +177,12 @@ fn tab(
         Status::Failed(_) => Some("!".into()),
         _ => None,
     };
-    let text_w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(name.to_string(), font.clone(), FG).size().x);
+    let text_w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(name.to_string(), font.clone(), pal::fg()).size().x);
     let code_w = code.as_ref().map_or(0.0, |c| c.len() as f32 * 7.0 + 8.0);
     // Badge: unseen errors (red) or, failing that, unseen warnings (amber).
     let badge = match unseen {
-        (e, _) if e > 0 => Some((badge_text(e), BAD)),
-        (_, w) if w > 0 => Some((badge_text(w), WARN)),
+        (e, _) if e > 0 => Some((badge_text(e), pal::bad())),
+        (_, w) if w > 0 => Some((badge_text(w), pal::warn())),
         _ => None,
     };
     let badge_w = badge.as_ref().map_or(0.0, |(t, _)| pill_width(t) + 8.0);
@@ -193,12 +193,12 @@ fn tab(
     let painter = ui.painter_at(rect);
 
     if selected {
-        painter.rect_filled(rect, CornerRadius::ZERO, BG);
-        painter.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 2.0)), CornerRadius::ZERO, ACCENT);
+        painter.rect_filled(rect, CornerRadius::ZERO, pal::bg());
+        painter.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 2.0)), CornerRadius::ZERO, pal::accent());
     } else if resp.hovered() {
-        painter.rect_filled(rect, CornerRadius::ZERO, BG.gamma_multiply(0.5));
+        painter.rect_filled(rect, CornerRadius::ZERO, pal::bg().gamma_multiply(0.5));
     }
-    painter.line_segment([rect.right_top(), rect.right_bottom()], Stroke::new(1.0, LINE));
+    painter.line_segment([rect.right_top(), rect.right_bottom()], Stroke::new(1.0, pal::line()));
     dot(&painter, egui::pos2(rect.min.x + 16.0, rect.center().y), status_color(status));
     kind.paint(&painter, egui::pos2(rect.min.x + 34.0, rect.center().y));
     painter.text(
@@ -206,7 +206,7 @@ fn tab(
         Align2::LEFT_CENTER,
         name,
         font,
-        if selected { FG } else { DIM },
+        if selected { pal::fg() } else { pal::dim() },
     );
     if let Some(code) = code {
         painter.text(
@@ -214,7 +214,7 @@ fn tab(
             Align2::LEFT_CENTER,
             code,
             FontId::monospace(11.0),
-            BAD,
+            pal::bad(),
         );
     }
     if let Some((text, color)) = &badge {
@@ -248,7 +248,7 @@ fn tab(
             ui.close();
         }
         ui.separator();
-        if ui.button(RichText::new("Remove…").color(BAD)).clicked() {
+        if ui.button(RichText::new("Remove…").color(pal::bad())).clicked() {
             app.push(Action::RemoveTerminal(pid, tid));
             ui.close();
         }
@@ -300,16 +300,16 @@ fn toolbar(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid) {
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 16.0), Sense::hover());
                 dot(ui.painter(), r.center(), status_color(&status));
-                let label = ui.label(RichText::new(status.label()).color(FG));
+                let label = ui.label(RichText::new(status.label()).color(pal::fg()));
                 if let Some(t) = &title {
                     label.on_hover_text(format!("Title: {t}"));
                 }
                 if let Some(up) = uptime {
-                    ui.label(RichText::new(up).monospace().size(12.0).color(DIM)).on_hover_text("Uptime");
+                    ui.label(RichText::new(up).monospace().size(12.0).color(pal::dim())).on_hover_text("Uptime");
                 }
-                ui.label(RichText::new(shell).monospace().size(12.0).color(DIM));
+                ui.label(RichText::new(shell).monospace().size(12.0).color(pal::dim()));
                 if !command.is_empty() {
-                    ui.add(egui::Label::new(RichText::new(format!("$ {command}")).monospace().size(12.0).color(DIM)).truncate())
+                    ui.add(egui::Label::new(RichText::new(format!("$ {command}")).monospace().size(12.0).color(pal::dim())).truncate())
                         .on_hover_text(&command);
                 }
             });
@@ -345,18 +345,18 @@ fn terminal_area(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid) {
         ui.add_space(ui.available_height() / 3.0);
         match &status {
             Status::Failed(msg) => {
-                ui.label(RichText::new(msg).color(BAD));
+                ui.label(RichText::new(msg).color(pal::bad()));
             }
             _ if !auto => {
-                ui.label(RichText::new("Auto-start is off for this terminal.").color(DIM));
+                ui.label(RichText::new("Auto-start is off for this terminal.").color(pal::dim()));
             }
             _ => {
-                ui.label(RichText::new("Not started.").color(DIM));
+                ui.label(RichText::new("Not started.").color(pal::dim()));
             }
         }
         if !command.is_empty() {
             ui.add_space(4.0);
-            ui.label(RichText::new(format!("$ {command}")).monospace().color(FG));
+            ui.label(RichText::new(format!("$ {command}")).monospace().color(pal::fg()));
         }
         ui.add_space(10.0);
         if ui.button("Start").clicked() {
@@ -377,7 +377,7 @@ fn status_bar(app: &App, ui: &mut Ui, pid: Uuid) {
                         tm_core::paths::HostMode::User => "Background host",
                     };
                     (
-                        RichText::new(kind).color(DIM),
+                        RichText::new(kind).color(pal::dim()),
                         format!(
                             "Terminals run in the {}, so closing this window leaves them running.
 Host {} (pid {}), data in {}",
@@ -388,14 +388,14 @@ Host {} (pid {}), data in {}",
                         ),
                     )
                 }
-                _ => (RichText::new("Not connected").color(BAD), String::new()),
+                _ => (RichText::new("Not connected").color(pal::bad()), String::new()),
             };
             let label = ui.label(text.monospace().size(11.0));
             if !hover.is_empty() {
                 label.on_hover_text(hover);
             }
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                ui.add(egui::Label::new(RichText::new(root).monospace().size(11.0).color(DIM)).truncate());
+                ui.add(egui::Label::new(RichText::new(root).monospace().size(11.0).color(pal::dim())).truncate());
             });
         });
     });
@@ -411,7 +411,7 @@ fn find_bar(app: &mut App, ui: &mut Ui, tid: Uuid) {
     let mut close = false;
     let mut step: Option<bool> = None;
     Panel::top("find-bar")
-        .frame(Frame::new().fill(SIDE).inner_margin(Margin::symmetric(12, 6)).stroke(Stroke::new(1.0, LINE)))
+        .frame(Frame::new().fill(pal::side()).inner_margin(Margin::symmetric(12, 6)).stroke(Stroke::new(1.0, pal::line())))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 let edit = ui.add(
@@ -445,14 +445,14 @@ fn find_bar(app: &mut App, ui: &mut Ui, tid: Uuid) {
                     (n, Some(i)) => format!("{} of {n}", i + 1),
                     (n, None) => format!("{n} matches"),
                 };
-                ui.label(RichText::new(label).size(12.0).color(if n == 0 && !bar.query.is_empty() { BAD } else { DIM }));
+                ui.label(RichText::new(label).size(12.0).color(if n == 0 && !bar.query.is_empty() { pal::bad() } else { pal::dim() }));
                 if ui.button("↑").on_hover_text("Previous (Shift+Enter)").clicked() {
                     step = Some(false);
                 }
                 if ui.button("↓").on_hover_text("Next (Enter)").clicked() {
                     step = Some(true);
                 }
-                ui.label(RichText::new("Scrollback only covers recent output; use Logs for older lines.").size(11.0).color(DIM));
+                ui.label(RichText::new("Scrollback only covers recent output; use Logs for older lines.").size(11.0).color(pal::dim()));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.button("Close").on_hover_text("Esc").clicked() {
                         close = true;

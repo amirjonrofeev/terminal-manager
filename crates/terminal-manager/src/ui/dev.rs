@@ -3,7 +3,7 @@
 //! and desktop (`code .` opens a window), and keep running when the window closes.
 
 use super::main_area::status_color;
-use super::{dot, ACCENT, BG, DIM, FG, LINE, SIDE};
+use super::{dot, pal};
 use crate::app::{Action, App, Connection, DevPreset, DevSide};
 use crate::term::TerminalView;
 use egui::{Align, Align2, CentralPanel, CornerRadius, FontId, Frame, Id, Layout, Margin, Panel, RichText, Sense, Stroke, Ui};
@@ -27,7 +27,7 @@ pub fn panel(app: &mut App, ui: &mut Ui, pid: Uuid) {
     let active = app.active_dev_tab(pid);
 
     Panel::top("dev-head")
-        .frame(Frame::new().fill(SIDE).stroke(Stroke::new(1.0, LINE)))
+        .frame(Frame::new().fill(pal::side()).stroke(Stroke::new(1.0, pal::line())))
         .show(ui, |ui| header(app, ui, pid, &terms, active));
 
     let status = match &app.dev_connection {
@@ -39,23 +39,23 @@ pub fn panel(app: &mut App, ui: &mut Ui, pid: Uuid) {
         CentralPanel::no_frame().show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(ui.available_height() / 3.0);
-                ui.label(RichText::new(msg).color(DIM));
+                ui.label(RichText::new(msg).color(pal::dim()));
             });
         });
         return;
     }
 
     let Some(spec) = active.and_then(|tid| terms.iter().find(|t| t.id == tid)).cloned() else {
-        CentralPanel::no_frame().frame(Frame::new().fill(BG)).show(ui, |ui| empty(app, ui, pid));
+        CentralPanel::no_frame().frame(Frame::new().fill(pal::bg())).show(ui, |ui| empty(app, ui, pid));
         return;
     };
     let tid = spec.id;
     let status = app.status(tid);
     Panel::top("dev-toolbar")
-        .frame(Frame::new().fill(BG).inner_margin(Margin::symmetric(10, 5)).stroke(Stroke::new(1.0, LINE)))
+        .frame(Frame::new().fill(pal::bg()).inner_margin(Margin::symmetric(10, 5)).stroke(Stroke::new(1.0, pal::line())))
         .show(ui, |ui| toolbar(app, ui, pid, &spec, &status));
 
-    CentralPanel::no_frame().frame(Frame::new().fill(BG)).show(ui, |ui| {
+    CentralPanel::no_frame().frame(Frame::new().fill(pal::bg())).show(ui, |ui| {
         let interactive = app.dialog.is_none() && app.dev_connected();
         let has_run = !matches!(status, Status::NotStarted | Status::Failed(_));
         let focus = app.focus_dev && interactive;
@@ -66,12 +66,12 @@ pub fn panel(app: &mut App, ui: &mut Ui, pid: Uuid) {
         ui.vertical_centered(|ui| {
             ui.add_space(ui.available_height() / 3.0);
             if let Status::Failed(msg) = &status {
-                ui.label(RichText::new(msg).color(super::BAD));
+                ui.label(RichText::new(msg).color(super::pal::bad()));
             } else {
-                ui.label(RichText::new("Not running.").color(DIM));
+                ui.label(RichText::new("Not running.").color(pal::dim()));
             }
             if !spec.command.trim().is_empty() {
-                ui.label(RichText::new(format!("$ {}", spec.command.trim())).monospace().color(FG));
+                ui.label(RichText::new(format!("$ {}", spec.command.trim())).monospace().color(pal::fg()));
             }
             ui.add_space(8.0);
             if ui.button("Start").clicked() {
@@ -103,7 +103,7 @@ fn header(app: &mut App, ui: &mut Ui, pid: Uuid, terms: &[TerminalSpec], active:
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 ui.add_space(10.0);
-                ui.label(RichText::new("DEV").size(11.0).color(ACCENT).extra_letter_spacing(1.0));
+                ui.label(RichText::new("DEV").size(11.0).color(pal::accent()).extra_letter_spacing(1.0));
                 ui.add_space(8.0);
                 egui::ScrollArea::horizontal()
                     .id_salt("dev-tabs")
@@ -123,7 +123,7 @@ fn header(app: &mut App, ui: &mut Ui, pid: Uuid, terms: &[TerminalSpec], active:
 }
 
 fn add_menu(app: &mut App, ui: &mut Ui, pid: Uuid) {
-    ui.menu_button(RichText::new("+").size(16.0).color(DIM), |ui| {
+    ui.menu_button(RichText::new("+").size(16.0).color(pal::dim()), |ui| {
         let claude = ui.add_enabled(claude_available(), egui::Button::new("Claude Code"));
         let claude = if claude_available() {
             claude.on_hover_text("Runs `claude` in the project folder")
@@ -147,21 +147,21 @@ fn add_menu(app: &mut App, ui: &mut Ui, pid: Uuid) {
 
 fn dev_tab(app: &mut App, ui: &mut Ui, pid: Uuid, t: &TerminalSpec, selected: bool) {
     let font = FontId::proportional(13.0);
-    let text_w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(t.name.clone(), font.clone(), FG).size().x);
+    let text_w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(t.name.clone(), font.clone(), pal::fg()).size().x);
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(48.0 + text_w + 12.0, 34.0), Sense::click());
     let painter = ui.painter_at(rect);
     if selected {
-        painter.rect_filled(rect, CornerRadius::ZERO, BG);
-        painter.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 2.0)), CornerRadius::ZERO, ACCENT);
+        painter.rect_filled(rect, CornerRadius::ZERO, pal::bg());
+        painter.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 2.0)), CornerRadius::ZERO, pal::accent());
     } else if resp.hovered() {
-        painter.rect_filled(rect, CornerRadius::ZERO, BG.gamma_multiply(0.5));
+        painter.rect_filled(rect, CornerRadius::ZERO, pal::bg().gamma_multiply(0.5));
     }
     let status = app.status(t.id);
     dot(&painter, egui::pos2(rect.min.x + 14.0, rect.center().y), status_color(&status));
     let kind = app.kind_of(pid, t.id);
     kind.paint(&painter, egui::pos2(rect.min.x + 32.0, rect.center().y));
-    painter.text(egui::pos2(rect.min.x + 46.0, rect.center().y), Align2::LEFT_CENTER, &t.name, font, if selected { FG } else { DIM });
-    painter.line_segment([rect.right_top(), rect.right_bottom()], Stroke::new(1.0, LINE));
+    painter.text(egui::pos2(rect.min.x + 46.0, rect.center().y), Align2::LEFT_CENTER, &t.name, font, if selected { pal::fg() } else { pal::dim() });
+    painter.line_segment([rect.right_top(), rect.right_bottom()], Stroke::new(1.0, pal::line()));
 
     let resp = resp.on_hover_text(kind.label());
     if resp.clicked() {
@@ -182,7 +182,7 @@ fn dev_tab(app: &mut App, ui: &mut Ui, pid: Uuid, t: &TerminalSpec, selected: bo
             ui.close();
         }
         ui.separator();
-        if ui.button(RichText::new("Remove…").color(super::BAD)).clicked() {
+        if ui.button(RichText::new("Remove…").color(super::pal::bad())).clicked() {
             app.push(Action::RemoveTerminal(pid, tid));
             ui.close();
         }
@@ -209,10 +209,10 @@ fn toolbar(app: &mut App, ui: &mut Ui, pid: Uuid, spec: &TerminalSpec, status: &
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 14.0), Sense::hover());
                 dot(ui.painter(), r.center(), status_color(status));
-                ui.label(RichText::new(status.label()).size(12.0).color(FG));
+                ui.label(RichText::new(status.label()).size(12.0).color(pal::fg()));
                 let cmd = spec.command.trim();
                 let shown = if cmd.is_empty() { "shell".to_string() } else { format!("$ {cmd}") };
-                ui.add(egui::Label::new(RichText::new(shown).monospace().size(12.0).color(DIM)).truncate());
+                ui.add(egui::Label::new(RichText::new(shown).monospace().size(12.0).color(pal::dim())).truncate());
             });
         });
     });
@@ -222,13 +222,13 @@ fn empty(app: &mut App, ui: &mut Ui, pid: Uuid) {
     let folder = app.ws.project(pid).map(|p| p.root.display().to_string()).unwrap_or_default();
     ui.vertical_centered(|ui| {
         ui.add_space(ui.available_height() / 4.0);
-        ui.label(RichText::new("Dev terminals").size(17.0).color(FG));
+        ui.label(RichText::new("Dev terminals").size(17.0).color(pal::fg()));
         ui.add_space(4.0);
-        ui.label(RichText::new(format!("Run Claude Code or a shell in {folder}")).color(DIM));
+        ui.label(RichText::new(format!("Run Claude Code or a shell in {folder}")).color(pal::dim()));
         ui.label(
             RichText::new("They run as you, aren't written to the logs, and keep running when you close the window.")
                 .size(12.0)
-                .color(DIM),
+                .color(pal::dim()),
         );
         ui.add_space(12.0);
         if claude_available() {

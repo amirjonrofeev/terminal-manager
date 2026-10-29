@@ -1,15 +1,15 @@
 //! Left panel: the project list.
 
-use super::{dot, pill, pill_width, BAD, BG, DIM, FG, IDLE, LINE, OK, ROW_SELECTED, SIDE, WARN};
+use super::{dot, pill, pill_width, pal};
 use crate::app::{Action, App, Rollup};
 use egui::{Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, Panel, RichText, ScrollArea, Sense, Stroke, Ui};
 
 pub fn rollup_color(r: Rollup) -> Color32 {
     match r {
-        Rollup::Ok => OK,
-        Rollup::Warn => WARN,
-        Rollup::Bad => BAD,
-        Rollup::Idle => IDLE,
+        Rollup::Ok => pal::ok(),
+        Rollup::Warn => pal::warn(),
+        Rollup::Bad => pal::bad(),
+        Rollup::Idle => pal::idle(),
     }
 }
 
@@ -22,16 +22,16 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         .resizable(true)
         .default_size(240.0)
         .size_range(180.0..=420.0)
-        .frame(Frame::new().fill(SIDE).stroke(Stroke::new(1.0, LINE)))
+        .frame(Frame::new().fill(pal::side()).stroke(Stroke::new(1.0, pal::line())))
         .show(ui, |ui| {
             Panel::bottom("sidebar-footer")
-                .frame(Frame::new().fill(SIDE).inner_margin(Margin::symmetric(12, 10)))
+                .frame(Frame::new().fill(pal::side()).inner_margin(Margin::symmetric(12, 10)))
                 .show(ui, |ui| footer(app, ui));
 
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 ui.add_space(14.0);
-                ui.label(RichText::new("PROJECTS").size(11.0).color(DIM).extra_letter_spacing(1.0));
+                ui.label(RichText::new("PROJECTS").size(11.0).color(pal::dim()).extra_letter_spacing(1.0));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add_space(10.0);
                     if ui.button("+ Project").on_hover_text("Add a project folder (Ctrl+Shift+N)").clicked() {
@@ -42,7 +42,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.add_space(10.0);
-                let search = egui::Button::new(RichText::new("Search logs…").color(DIM))
+                let search = egui::Button::new(RichText::new("Search logs…").color(pal::dim()))
                     .min_size(egui::vec2(ui.available_width() - 10.0, 24.0));
                 if ui.add(search).on_hover_text("Search every terminal's saved output (Ctrl+Shift+F)").clicked() {
                     app.push(Action::OpenSearch);
@@ -59,7 +59,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     ui.add_space(8.0);
                     ui.horizontal_wrapped(|ui| {
                         ui.add_space(14.0);
-                        ui.label(RichText::new("No projects yet. Add a folder to get started.").color(DIM));
+                        ui.label(RichText::new("No projects yet. Add a folder to get started.").color(pal::dim()));
                     });
                 }
                 for id in open {
@@ -69,7 +69,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
                         ui.add_space(14.0);
-                        ui.label(RichText::new("CLOSED").size(11.0).color(DIM).extra_letter_spacing(1.0));
+                        ui.label(RichText::new("CLOSED").size(11.0).color(pal::dim()).extra_letter_spacing(1.0));
                     });
                     ui.add_space(4.0);
                     for id in closed {
@@ -96,19 +96,19 @@ fn project_row(app: &mut App, ui: &mut Ui, id: uuid::Uuid) {
     let row = rect.shrink2(egui::vec2(8.0, 0.0));
     let painter = ui.painter_at(row);
     if selected {
-        painter.rect_filled(row, CornerRadius::same(7), ROW_SELECTED);
+        painter.rect_filled(row, CornerRadius::same(7), pal::row_selected());
     } else if resp.hovered() {
-        painter.rect_filled(row, CornerRadius::same(7), BG.gamma_multiply(0.6));
+        painter.rect_filled(row, CornerRadius::same(7), pal::bg().gamma_multiply(0.6));
     }
-    let text_color = if open { FG } else { DIM };
-    dot(&painter, egui::pos2(row.min.x + 14.0, row.center().y), if open { color } else { IDLE.gamma_multiply(0.6) });
+    let text_color = if open { pal::fg() } else { pal::dim() };
+    dot(&painter, egui::pos2(row.min.x + 14.0, row.center().y), if open { color } else { pal::idle().gamma_multiply(0.6) });
     painter.text(egui::pos2(row.min.x + 28.0, row.min.y + 7.0), Align2::LEFT_TOP, &name, FontId::proportional(14.0), text_color);
     let count = format!("{running}/{total}");
     let count_rect =
-        painter.text(egui::pos2(row.max.x - 10.0, row.min.y + 9.0), Align2::RIGHT_TOP, count, FontId::monospace(11.0), DIM);
+        painter.text(egui::pos2(row.max.x - 10.0, row.min.y + 9.0), Align2::RIGHT_TOP, count, FontId::monospace(11.0), pal::dim());
     let badge = match unseen {
-        (e, _) if e > 0 => Some((e, BAD)),
-        (_, w) if w > 0 => Some((w, WARN)),
+        (e, _) if e > 0 => Some((e, pal::bad())),
+        (_, w) if w > 0 => Some((w, pal::warn())),
         _ => None,
     };
     if let Some((n, color)) = badge {
@@ -122,7 +122,7 @@ fn project_row(app: &mut App, ui: &mut Ui, id: uuid::Uuid) {
         Align2::LEFT_TOP,
         &path,
         FontId::monospace(11.0),
-        DIM,
+        pal::dim(),
     );
 
     let resp = resp.on_hover_text(&path);
@@ -157,7 +157,7 @@ fn project_row(app: &mut App, ui: &mut Ui, id: uuid::Uuid) {
             app.push(Action::OpenProject(id));
             ui.close();
         }
-        if ui.button(RichText::new("Remove…").color(BAD)).clicked() {
+        if ui.button(RichText::new("Remove…").color(pal::bad())).clicked() {
             app.push(Action::RemoveProject(id));
             ui.close();
         }
@@ -203,10 +203,10 @@ fn collapsed(app: &mut App, ui: &mut Ui) {
     Panel::left("sidebar-collapsed")
         .resizable(false)
         .exact_size(46.0)
-        .frame(Frame::new().fill(SIDE).stroke(Stroke::new(1.0, LINE)))
+        .frame(Frame::new().fill(pal::side()).stroke(Stroke::new(1.0, pal::line())))
         .show(ui, |ui| {
             Panel::bottom("sidebar-collapsed-footer")
-                .frame(Frame::new().fill(SIDE).inner_margin(Margin::symmetric(0, 10)))
+                .frame(Frame::new().fill(pal::side()).inner_margin(Margin::symmetric(0, 10)))
                 .show(ui, |ui| {
                     ui.vertical_centered(|ui| {
                         dev_button(app, ui);
@@ -232,14 +232,14 @@ fn collapsed(app: &mut App, ui: &mut Ui) {
                     let selected = app.ui.active_project == Some(id);
                     let (rect, resp) = ui.allocate_exact_size(egui::vec2(34.0, 34.0), Sense::click());
                     let painter = ui.painter_at(rect.expand(2.0));
-                    painter.rect_filled(rect, CornerRadius::same(8), if selected { ROW_SELECTED } else { BG });
+                    painter.rect_filled(rect, CornerRadius::same(8), if selected { pal::row_selected() } else { pal::bg() });
                     if resp.hovered() {
-                        painter.rect_stroke(rect, CornerRadius::same(8), Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
+                        painter.rect_stroke(rect, CornerRadius::same(8), Stroke::new(1.0, pal::line()), egui::StrokeKind::Inside);
                     }
-                    painter.text(rect.center(), Align2::CENTER_CENTER, initial, FontId::proportional(15.0), FG);
+                    painter.text(rect.center(), Align2::CENTER_CENTER, initial, FontId::proportional(15.0), pal::fg());
                     dot(&painter, rect.right_bottom() - egui::vec2(5.0, 5.0), color);
                     if errors > 0 {
-                        painter.circle_filled(rect.right_top() + egui::vec2(-5.0, 5.0), 4.0, BAD);
+                        painter.circle_filled(rect.right_top() + egui::vec2(-5.0, 5.0), 4.0, pal::bad());
                     }
                     let hover = if errors > 0 { format!("{name} · {errors} unseen errors") } else { name };
                     if resp.on_hover_text(hover).clicked() {

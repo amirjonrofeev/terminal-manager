@@ -443,6 +443,9 @@ impl Host {
                 }
             }
             ClientMsg::Search { .. } | ClientMsg::CancelSearch | ClientMsg::ReadLog { .. } => {}
+            ClientMsg::SetTheme { light } => {
+                crate::terminal::LIGHT_THEME.store(light, Ordering::Relaxed);
+            }
             ClientMsg::MarkSeen(terminal) => {
                 if let Some(t) = st.terms.get(&terminal) {
                     t.log.lock().unwrap().counts.reset();

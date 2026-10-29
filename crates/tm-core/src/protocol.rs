@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Bump on any change to these types; mismatched peers refuse to talk.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum Status {
@@ -92,6 +92,8 @@ pub enum ClientMsg {
     /// Searches the logs. A newer search from the same client cancels an older one.
     Search { req: u64, query: SearchQuery },
     CancelSearch,
+    /// The window's theme, so programs asking for the terminal's colors get the right ones.
+    SetTheme { light: bool },
     /// A page of one terminal's log around a time (or the newest lines).
     ReadLog { req: u64, terminal: Uuid, around_ms: Option<i64>, before: u32, after: u32, levels: Vec<Level> },
 }

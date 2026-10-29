@@ -147,8 +147,8 @@ impl Kind {
                 text("D", 10.5, Color32::WHITE);
             }
             Kind::Shell => {
-                painter.rect_stroke(rect.shrink(1.0), CornerRadius::same(3), Stroke::new(1.0, super::DIM), egui::StrokeKind::Inside);
-                text(">_", 8.5, super::DIM);
+                painter.rect_stroke(rect.shrink(1.0), CornerRadius::same(3), Stroke::new(1.0, super::pal::dim()), egui::StrokeKind::Inside);
+                text(">_", 8.5, super::pal::dim());
             }
         }
     }

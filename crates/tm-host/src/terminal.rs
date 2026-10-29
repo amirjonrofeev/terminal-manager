@@ -20,6 +20,10 @@ use tm_core::protocol::{HostMsg, Status, TerminalState};
 use tm_core::shell;
 use uuid::Uuid;
 
+/// Whether the windows show the light theme; color queries from programs are answered with
+/// the matching palette. Set by `ClientMsg::SetTheme` (the most recent window wins).
+pub static LIGHT_THEME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Raw output kept per terminal and replayed to a viewer when it attaches.
 pub const REPLAY_BYTES: usize = 1024 * 1024;
 const DEFAULT_SIZE: (u16, u16) = (120, 30);
@@ -318,7 +322,8 @@ fn spawn(
                 Event::PtyWrite(s) => reply(s),
                 Event::TextAreaSizeRequest(fmt) => reply(fmt(window_size(size))),
                 Event::ColorRequest(index, fmt) => {
-                    let (r, g, b) = palette::rgb_for_index(index);
+                    let light = LIGHT_THEME.load(std::sync::atomic::Ordering::Relaxed);
+                    let (r, g, b) = palette::rgb_for_index(palette::for_theme(light), index);
                     reply(fmt(Rgb { r, g, b }));
                 }
                 Event::Title(t) => events(generation, RunEvent::Title(t)),

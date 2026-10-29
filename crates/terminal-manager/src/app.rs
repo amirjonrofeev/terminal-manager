@@ -27,6 +27,25 @@ pub struct WindowState {
     pub maximized: bool,
 }
 
+/// Light or dark look; `System` follows the Windows (or desktop) setting.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ThemeChoice {
+    #[default]
+    Dark,
+    Light,
+    System,
+}
+
+impl ThemeChoice {
+    fn preference(self) -> egui::ThemePreference {
+        match self {
+            ThemeChoice::Dark => egui::ThemePreference::Dark,
+            ThemeChoice::Light => egui::ThemePreference::Light,
+            ThemeChoice::System => egui::ThemePreference::System,
+        }
+    }
+}
+
 /// Which side of the project view the dev panel tiles on.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DevSide {
@@ -51,6 +70,7 @@ pub struct UiState {
     /// Selected dev terminal per project.
     pub dev_tab: HashMap<Uuid, Uuid>,
     pub sidebar_collapsed: bool,
+    pub theme: ThemeChoice,
 }
 
 /// What a new dev terminal runs.
@@ -140,6 +160,8 @@ pub struct App {
     attached_dev: HashSet<Uuid>,
     /// Give the dev terminal keyboard focus next frame.
     pub focus_dev: bool,
+    /// The theme last reported to the hosts (resend after reconnecting).
+    theme_sent: Option<bool>,
     ctx: egui::Context,
     /// Terminals we asked the host to reset unseen counts for, until it confirms.
     pending_seen: HashSet<Uuid>,
@@ -172,6 +194,7 @@ pub struct FindBar {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, ui_path: PathBuf, ui_state: persist::Loaded<UiState>) -> Self {
         ui::setup(&cc.egui_ctx);
+        cc.egui_ctx.set_theme(ui_state.value.theme.preference());
         Self {
             ws: Workspace::default(),
             screens: HashMap::new(),
@@ -185,6 +208,7 @@ impl App {
             dev_client: None,
             attached_dev: HashSet::new(),
             focus_dev: false,
+            theme_sent: None,
             ctx: cc.egui_ctx.clone(),
             pending_seen: HashSet::new(),
             ui_path,
@@ -556,7 +580,11 @@ impl App {
                 self.mark_dirty();
             }
             Action::OpenSettings => {
-                self.dialog = Some(Dialog::Settings { dev_enabled: self.dev_enabled(), dev_side: self.ui.dev_side });
+                self.dialog = Some(Dialog::Settings {
+                    dev_enabled: self.dev_enabled(),
+                    dev_side: self.ui.dev_side,
+                    theme: self.ui.theme,
+                });
             }
             Action::SetDevSide(side) => {
                 self.ui.dev_side = side;
@@ -670,11 +698,15 @@ impl App {
                     self.select_tab(project, id);
                 }
             }
-            Dialog::Settings { dev_enabled, dev_side } => {
+            Dialog::Settings { dev_enabled, dev_side, theme } => {
                 if dev_enabled != self.dev_enabled() {
                     self.apply(Action::SetDevEnabled(dev_enabled));
                 }
                 self.ui.dev_side = dev_side;
+                if theme != self.ui.theme {
+                    self.ui.theme = theme;
+                    self.ctx.set_theme(theme.preference());
+                }
                 self.mark_dirty();
             }
             Dialog::Confirm { action, .. } => match action {
@@ -709,7 +741,8 @@ impl App {
             ClientEvent::Denied(reason) => Connection::Denied(reason),
             ClientEvent::Msg(msg) => return self.handle_host(conn, msg),
         };
-        // Any change of connection means every terminal needs a fresh replay.
+        // Any change of connection means every terminal needs a fresh replay (and the theme again).
+        self.theme_sent = None;
         match conn {
             Conn::Main => {
                 self.connection = state;
@@ -940,6 +973,15 @@ impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.sync_dev_client();
         self.pump_host();
+        // Follow the resolved theme (it can change with the Windows setting) and tell the hosts,
+        // so programs asking the terminal for its colors get the ones on screen.
+        let light = ctx.theme() == egui::Theme::Light;
+        ui::pal::set_light(light);
+        if self.theme_sent != Some(light) {
+            self.theme_sent = Some(light);
+            self.send(ClientMsg::SetTheme { light });
+            self.send_dev(ClientMsg::SetTheme { light });
+        }
         self.track_window(ctx);
         if self.states.values().any(|s| s.status.is_running()) {
             ctx.request_repaint_after(Duration::from_secs(1));

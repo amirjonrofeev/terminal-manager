@@ -1,7 +1,7 @@
 //! Log views: a terminal's Logs tab and the search across all terminals. Both read the
 //! host's log files (timestamped, one per day) through Search / ReadLog requests.
 
-use super::{ACCENT, BAD, BG, DIM, FG, LINE, SIDE, WARN};
+use super::pal;
 use crate::app::{Action, App};
 use chrono::{Duration as ChronoDuration, Local, NaiveDate, TimeZone};
 use egui::text::LayoutJob;
@@ -243,7 +243,7 @@ fn filter_bar(ui: &mut Ui, id: &str, f: &mut Filters, busy: bool) -> BarEvent {
         if f.range == Range::Custom {
             let (from, to) = (f.from, f.to);
             ui.add(egui_extras::DatePickerButton::new(&mut f.from).id_salt(&format!("{id}-from")).calendar_week(false));
-            ui.label(RichText::new("to").color(DIM));
+            ui.label(RichText::new("to").color(pal::dim()));
             ui.add(egui_extras::DatePickerButton::new(&mut f.to).id_salt(&format!("{id}-to")).calendar_week(false));
             if (from, to) != (f.from, f.to) {
                 event = BarEvent::Search;
@@ -269,10 +269,10 @@ fn filter_bar(ui: &mut Ui, id: &str, f: &mut Filters, busy: bool) -> BarEvent {
 
 fn level_style(level: Level) -> (&'static str, Color32) {
     match level {
-        Level::Error => ("E", BAD),
-        Level::Warning => ("W", WARN),
-        Level::System => ("•", ACCENT),
-        Level::Info => (" ", DIM),
+        Level::Error => ("E", pal::bad()),
+        Level::Warning => ("W", pal::warn()),
+        Level::System => ("•", pal::accent()),
+        Level::Info => (" ", pal::dim()),
     }
 }
 
@@ -284,7 +284,7 @@ fn short_time(ts: &str) -> String {
 fn highlighted(text: &str, re: Option<&Regex>, color: Color32) -> LayoutJob {
     let font = FontId::monospace(13.0);
     let plain = TextFormat { font_id: font.clone(), color, ..Default::default() };
-    let mark = TextFormat { font_id: font, color: FG, background: ACCENT.gamma_multiply(0.35), ..Default::default() };
+    let mark = TextFormat { font_id: font, color: pal::fg(), background: pal::accent().gamma_multiply(0.35), ..Default::default() };
     let mut job = LayoutJob::default();
     let mut last = 0;
     if let Some(re) = re {
@@ -335,44 +335,44 @@ fn result_list(
             let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_HEIGHT), Sense::click());
             let painter = ui.painter_at(rect);
             if is_highlight {
-                painter.rect_filled(rect, 0.0, ACCENT.gamma_multiply(0.18));
+                painter.rect_filled(rect, 0.0, pal::accent().gamma_multiply(0.18));
             } else if resp.hovered() {
-                painter.rect_filled(rect, 0.0, SIDE);
+                painter.rect_filled(rect, 0.0, pal::side());
             }
             let (code, color) = level_style(row.entry.level);
             let mut x = rect.min.x + 6.0;
             let mid = rect.center().y;
-            painter.text(egui::pos2(x, mid), egui::Align2::LEFT_CENTER, short_time(&row.entry.ts), FontId::monospace(12.0), DIM);
+            painter.text(egui::pos2(x, mid), egui::Align2::LEFT_CENTER, short_time(&row.entry.ts), FontId::monospace(12.0), pal::dim());
             x += 150.0;
             painter.text(egui::pos2(x, mid), egui::Align2::LEFT_CENTER, code, FontId::monospace(12.0), color);
             x += 16.0;
             if let Some(name) = terminal_name {
-                let galley = painter.layout_no_wrap(name(row.terminal), FontId::proportional(12.0), ACCENT);
-                painter.galley(egui::pos2(x, mid - galley.size().y / 2.0), galley, ACCENT);
+                let galley = painter.layout_no_wrap(name(row.terminal), FontId::proportional(12.0), pal::accent());
+                painter.galley(egui::pos2(x, mid - galley.size().y / 2.0), galley, pal::accent());
                 x += 140.0;
             }
             let text_color = match row.entry.level {
-                Level::Error => BAD,
-                Level::Warning => WARN,
-                _ => FG,
+                Level::Error => pal::bad(),
+                Level::Warning => pal::warn(),
+                _ => pal::fg(),
             };
             let galley = ui.fonts_mut(|f| f.layout_job(highlighted(&row.entry.text, highlighter, text_color)));
             painter.galley(egui::pos2(x, mid - galley.size().y / 2.0), galley, text_color);
 
             let resp = resp.on_hover_ui(|ui| {
-                ui.label(RichText::new(&row.entry.ts).monospace().color(DIM));
+                ui.label(RichText::new(&row.entry.ts).monospace().color(pal::dim()));
                 if !row.before.is_empty() || !row.after.is_empty() {
                     for e in &row.before {
-                        ui.label(RichText::new(&e.text).monospace().color(DIM));
+                        ui.label(RichText::new(&e.text).monospace().color(pal::dim()));
                     }
-                    ui.label(RichText::new(&row.entry.text).monospace().color(FG));
+                    ui.label(RichText::new(&row.entry.text).monospace().color(pal::fg()));
                     for e in &row.after {
-                        ui.label(RichText::new(&e.text).monospace().color(DIM));
+                        ui.label(RichText::new(&e.text).monospace().color(pal::dim()));
                     }
                 } else {
-                    ui.label(RichText::new(&row.entry.text).monospace().color(FG));
+                    ui.label(RichText::new(&row.entry.text).monospace().color(pal::fg()));
                 }
-                ui.label(RichText::new("Click to see it in context").size(11.0).color(DIM));
+                ui.label(RichText::new("Click to see it in context").size(11.0).color(pal::dim()));
             });
             let label = format!("{} {}", row.entry.ts, row.entry.text);
             resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
@@ -386,9 +386,9 @@ fn result_list(
 
 fn status_line(ui: &mut Ui, results: &Results) {
     if let Some(e) = &results.error {
-        ui.label(RichText::new(e).color(BAD));
+        ui.label(RichText::new(e).color(pal::bad()));
     } else if !results.status.is_empty() {
-        ui.label(RichText::new(&results.status).size(12.0).color(DIM));
+        ui.label(RichText::new(&results.status).size(12.0).color(pal::dim()));
     }
 }
 
@@ -400,25 +400,25 @@ pub fn terminal_logs(app: &mut App, ui: &mut Ui, tid: Uuid) {
     }
     let Some(tl) = app.term_logs.as_mut() else { return };
     let mut actions = Vec::new();
-    Frame::new().fill(BG).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
+    Frame::new().fill(pal::bg()).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
         if let Some(entry) = tl.context_of.clone() {
             ui.horizontal(|ui| {
                 if ui.button("← Back to results").clicked() {
                     actions.push(Action::TermLogsSearch);
                 }
-                ui.label(RichText::new(format!("Lines around {}", entry.ts)).color(DIM));
+                ui.label(RichText::new(format!("Lines around {}", entry.ts)).color(pal::dim()));
             });
         } else if filter_bar(ui, "term-logs", &mut tl.filters, tl.results.busy) == BarEvent::Search {
             actions.push(Action::TermLogsSearch);
         }
         status_line(ui, &tl.results);
     });
-    ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), egui::Stroke::new(1.0, LINE));
+    ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), egui::Stroke::new(1.0, pal::line()));
     let highlighter = if tl.context_of.is_some() { None } else { tl.filters.highlighter() };
     if tl.results.rows.is_empty() && !tl.results.busy && tl.results.error.is_none() {
         ui.vertical_centered(|ui| {
             ui.add_space(40.0);
-            ui.label(RichText::new("No log lines match. Try a longer date range or fewer filters.").color(DIM));
+            ui.label(RichText::new("No log lines match. Try a longer date range or fewer filters.").color(pal::dim()));
         });
     } else if let ListEvent::Open(i) = result_list(ui, "term-logs", &mut tl.results, highlighter.as_ref(), None) {
         if tl.context_of.is_none() {
@@ -443,10 +443,10 @@ pub fn global_search(app: &mut App, ui: &mut Ui) {
     let mut actions = Vec::new();
     let s = &mut app.search;
 
-    Frame::new().fill(SIDE).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
+    Frame::new().fill(pal::side()).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Search logs").size(17.0).strong().color(FG));
-            ui.label(RichText::new("in").color(DIM));
+            ui.label(RichText::new("Search logs").size(17.0).strong().color(pal::fg()));
+            ui.label(RichText::new("in").color(pal::dim()));
             let current = s.project.and_then(|id| projects.iter().find(|(p, _)| *p == id)).map(|(_, n)| n.clone());
             let before = s.project;
             egui::ComboBox::from_id_salt("search-scope")
@@ -483,7 +483,7 @@ pub fn global_search(app: &mut App, ui: &mut Ui) {
             } else {
                 "Nothing found. Try a longer date range, fewer filters, or different words."
             };
-            ui.label(RichText::new(msg).color(DIM));
+            ui.label(RichText::new(msg).color(pal::dim()));
         });
     } else if let ListEvent::Open(i) = result_list(ui, "global", &mut s.results, highlighter.as_ref(), Some(&name_of)) {
         let row = &s.results.rows[i];

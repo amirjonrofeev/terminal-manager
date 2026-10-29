@@ -197,6 +197,7 @@ impl<'a> TerminalView<'a> {
         let content = term.renderable_content();
         let colors = content.colors;
         let default_bg = theme::background(colors);
+        let default_fg = theme::foreground(colors);
         painter.rect_filled(rect, CornerRadius::ZERO, default_bg);
 
         let offset = content.display_offset as i32;
@@ -222,20 +223,27 @@ impl<'a> TerminalView<'a> {
 
             let mut fg = theme::resolve(cell.fg, colors);
             let mut bg = theme::resolve(cell.bg, colors);
-            if flags.intersects(Flags::DIM | Flags::DIM_BOLD) {
-                fg = fg.gamma_multiply(0.7);
-            }
             if flags.contains(Flags::INVERSE) {
                 std::mem::swap(&mut fg, &mut bg);
             }
             if selection.is_some_and(|s| s.contains(indexed.point)) {
-                bg = theme::SELECTION;
+                bg = theme::selection();
             }
             if let Some((_, current)) = finds.iter().find(|(m, _)| m.contains(&indexed.point)) {
-                bg = if *current { theme::FIND_CURRENT } else { theme::FIND };
+                bg = if *current { theme::find_current() } else { theme::find() };
                 if *current {
                     fg = default_bg;
                 }
+            }
+            // Like Windows Terminal: text a program colored almost like its background (white on
+            // a light theme, black on a dark one) is drawn in a readable color instead.
+            if theme::indistinguishable(fg, bg) && !flags.contains(Flags::HIDDEN) {
+                fg = theme::readable_on(bg, default_fg);
+            }
+            // Dim text moves part of the way toward the background (opaque, so it stays readable
+            // on light themes too; fading the alpha turned dim white into nothing there).
+            if flags.intersects(Flags::DIM | Flags::DIM_BOLD) {
+                fg = theme::mix(fg, bg, 0.35);
             }
             if flags.contains(Flags::HIDDEN) {
                 fg = bg;

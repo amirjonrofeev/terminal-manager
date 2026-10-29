@@ -1,6 +1,6 @@
 //! Modal editors and confirmations.
 
-use super::{ACCENT, BAD, DIM, FG};
+use super::pal;
 use crate::app::App;
 use tm_core::model::{EnvVar, Project, ShellKind, TerminalSpec};
 use tm_core::shell;
@@ -18,7 +18,7 @@ pub enum Dialog {
     Project { draft: Project, is_new: bool },
     Terminal { project: Uuid, draft: TerminalSpec, is_new: bool },
     Confirm { title: String, message: String, confirm_label: &'static str, action: ConfirmAction },
-    Settings { dev_enabled: bool, dev_side: crate::app::DevSide },
+    Settings { dev_enabled: bool, dev_side: crate::app::DevSide, theme: crate::app::ThemeChoice },
 }
 
 impl Dialog {
@@ -58,7 +58,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let modal = Modal::new(Id::unique("dialog")).show(ctx, |ui| {
         ui.set_width(460.0);
         match &mut dialog {
-            Dialog::Settings { dev_enabled, dev_side } => settings(ui, dev_enabled, dev_side, host.as_ref()),
+            Dialog::Settings { dev_enabled, dev_side, theme } => settings(ui, dev_enabled, dev_side, theme, host.as_ref()),
             Dialog::Project { draft, is_new } => project_editor(ui, draft, *is_new),
             Dialog::Terminal { draft, is_new, .. } => {
                 terminal_editor(ui, draft, *is_new, running_in_project, terminal_project.as_ref())
@@ -78,7 +78,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
 }
 
 fn heading(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(17.0).strong().color(FG));
+    ui.label(RichText::new(text).size(17.0).strong().color(pal::fg()));
     ui.add_space(8.0);
 }
 
@@ -88,7 +88,7 @@ fn buttons(ui: &mut Ui, primary: &str, can_save: bool) -> Outcome {
     ui.add_space(10.0);
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let save = ui.add_enabled(can_save, egui::Button::new(RichText::new(primary).color(FG)).fill(ACCENT.gamma_multiply(0.35)));
+            let save = ui.add_enabled(can_save, egui::Button::new(RichText::new(primary).color(pal::fg())).fill(pal::accent().gamma_multiply(0.35)));
             if save.clicked() || (can_save && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.ctrl)) {
                 out = Outcome::Confirm;
             }
@@ -103,11 +103,11 @@ fn buttons(ui: &mut Ui, primary: &str, can_save: bool) -> Outcome {
 fn project_editor(ui: &mut Ui, p: &mut Project, is_new: bool) -> Outcome {
     heading(ui, if is_new { "New project" } else { "Edit project" });
     Grid::new("project-form").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-        ui.label(RichText::new("Name").color(DIM));
+        ui.label(RichText::new("Name").color(pal::dim()));
         ui.add(TextEdit::singleline(&mut p.name).desired_width(f32::INFINITY));
         ui.end_row();
 
-        ui.label(RichText::new("Folder").color(DIM));
+        ui.label(RichText::new("Folder").color(pal::dim()));
         ui.horizontal(|ui| {
             let mut root = p.root.display().to_string();
             if ui.add(TextEdit::singleline(&mut root).desired_width(ui.available_width() - 80.0).font(egui::TextStyle::Monospace)).changed() {
@@ -121,21 +121,21 @@ fn project_editor(ui: &mut Ui, p: &mut Project, is_new: bool) -> Outcome {
         });
         ui.end_row();
 
-        ui.label(RichText::new("Default shell").color(DIM));
+        ui.label(RichText::new("Default shell").color(pal::dim()));
         shell_picker(ui, "project-shell", &mut p.default_shell, "System default");
         ui.end_row();
     });
     ui.add_space(10.0);
-    ui.label(RichText::new("Environment variables").color(DIM));
+    ui.label(RichText::new("Environment variables").color(pal::dim()));
     env_editor(ui, "project-env", &mut p.env);
     ui.label(
         RichText::new("Every terminal in this project gets these. A terminal's own value overrides the project's.")
             .size(12.0)
-            .color(DIM),
+            .color(pal::dim()),
     );
     let root_ok = p.root.is_dir();
     if !root_ok {
-        ui.label(RichText::new("This folder does not exist.").color(BAD));
+        ui.label(RichText::new("This folder does not exist.").color(pal::bad()));
     }
     buttons(ui, if is_new { "Add project" } else { "Save" }, !p.name.trim().is_empty() && root_ok)
 }
@@ -143,15 +143,15 @@ fn project_editor(ui: &mut Ui, p: &mut Project, is_new: bool) -> Outcome {
 fn terminal_editor(ui: &mut Ui, t: &mut TerminalSpec, is_new: bool, running: bool, project: Option<&Project>) -> Outcome {
     heading(ui, if is_new { "New terminal" } else { "Edit terminal" });
     Grid::new("terminal-form").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-        ui.label(RichText::new("Name").color(DIM));
+        ui.label(RichText::new("Name").color(pal::dim()));
         ui.add(TextEdit::singleline(&mut t.name).desired_width(f32::INFINITY));
         ui.end_row();
 
-        ui.label(RichText::new("Shell").color(DIM));
+        ui.label(RichText::new("Shell").color(pal::dim()));
         shell_picker(ui, "terminal-shell", &mut t.shell, "Project default");
         ui.end_row();
 
-        ui.label(RichText::new("Command").color(DIM));
+        ui.label(RichText::new("Command").color(pal::dim()));
         ui.add(
             TextEdit::singleline(&mut t.command)
                 .hint_text("e.g. npm run dev (empty = plain shell)")
@@ -160,7 +160,7 @@ fn terminal_editor(ui: &mut Ui, t: &mut TerminalSpec, is_new: bool, running: boo
         );
         ui.end_row();
 
-        ui.label(RichText::new("Working dir").color(DIM));
+        ui.label(RichText::new("Working dir").color(pal::dim()));
         ui.horizontal(|ui| {
             ui.add(
                 TextEdit::singleline(&mut t.cwd)
@@ -182,27 +182,27 @@ fn terminal_editor(ui: &mut Ui, t: &mut TerminalSpec, is_new: bool, running: boo
     if let Some(p) = project {
         let dir = p.resolve_cwd(&t.cwd);
         if !dir.is_dir() {
-            ui.label(RichText::new(format!("Folder not found: {}", dir.display())).size(12.0).color(BAD));
+            ui.label(RichText::new(format!("Folder not found: {}", dir.display())).size(12.0).color(pal::bad()));
         }
     }
     ui.add_space(10.0);
-    ui.label(RichText::new("Environment variables").color(DIM));
+    ui.label(RichText::new("Environment variables").color(pal::dim()));
     env_editor(ui, "terminal-env", &mut t.env);
     ui.add_space(6.0);
     ui.checkbox(&mut t.auto_start, "Start automatically when the project opens");
     if running && !is_new {
-        ui.label(RichText::new("Changes apply the next time this terminal restarts.").size(12.0).color(DIM));
+        ui.label(RichText::new("Changes apply the next time this terminal restarts.").size(12.0).color(pal::dim()));
     }
     buttons(ui, if is_new { "Create and start" } else { "Save" }, !t.name.trim().is_empty())
 }
 
 fn confirm(ui: &mut Ui, title: &str, message: &str, label: &str) -> Outcome {
     heading(ui, title);
-    ui.label(RichText::new(message).color(FG));
+    ui.label(RichText::new(message).color(pal::fg()));
     let mut out = Outcome::Open;
     ui.add_space(12.0);
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if ui.add(egui::Button::new(RichText::new(label).color(FG)).fill(BAD.gamma_multiply(0.4))).clicked() {
+        if ui.add(egui::Button::new(RichText::new(label).color(pal::fg())).fill(pal::bad().gamma_multiply(0.4))).clicked() {
             out = Outcome::Confirm;
         }
         if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -244,7 +244,7 @@ fn env_editor(ui: &mut Ui, id: &str, vars: &mut Vec<EnvVar>) {
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
         if vars.is_empty() {
-            ui.label(RichText::new("No variables.").size(12.0).color(DIM));
+            ui.label(RichText::new("No variables.").size(12.0).color(pal::dim()));
         }
         Grid::new(id).num_columns(3).spacing([6.0, 4.0]).show(ui, |ui| {
             for (i, var) in vars.iter_mut().enumerate() {
@@ -269,12 +269,22 @@ fn settings(
     ui: &mut Ui,
     dev_enabled: &mut bool,
     dev_side: &mut crate::app::DevSide,
+    theme: &mut crate::app::ThemeChoice,
     host: Option<&tm_core::protocol::HostInfo>,
 ) -> Outcome {
-    use crate::app::DevSide;
+    use crate::app::{DevSide, ThemeChoice};
     heading(ui, "Settings");
 
-    ui.label(RichText::new("Dev tools").strong().color(FG));
+    ui.label(RichText::new("Appearance").strong().color(pal::fg()));
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Theme").color(pal::dim()));
+        ui.radio_value(theme, ThemeChoice::Dark, "Dark");
+        ui.radio_value(theme, ThemeChoice::Light, "Light");
+        ui.radio_value(theme, ThemeChoice::System, "Match Windows");
+    });
+    ui.add_space(12.0);
+
+    ui.label(RichText::new("Dev tools").strong().color(pal::fg()));
     ui.checkbox(dev_enabled, "Enable dev tools (dev panel with Claude Code, shells and VS Code)");
     ui.label(
         RichText::new(
@@ -283,27 +293,27 @@ fn settings(
              already running keep running until you stop them.",
         )
         .size(12.0)
-        .color(DIM),
+        .color(pal::dim()),
     );
     ui.add_enabled_ui(*dev_enabled, |ui| {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Dev panel side").color(DIM));
+            ui.label(RichText::new("Dev panel side").color(pal::dim()));
             ui.radio_value(dev_side, DevSide::Left, "Left");
             ui.radio_value(dev_side, DevSide::Right, "Right");
         });
     });
 
     ui.add_space(12.0);
-    ui.label(RichText::new("Host").strong().color(FG));
+    ui.label(RichText::new("Host").strong().color(pal::fg()));
     match host {
         Some(info) => {
             let kind = match info.mode {
                 tm_core::paths::HostMode::Service => "Windows service",
                 tm_core::paths::HostMode::User => "Background host (your account)",
             };
-            ui.label(RichText::new(format!("{kind} · version {} · pid {}", info.version, info.pid)).color(DIM));
+            ui.label(RichText::new(format!("{kind} · version {} · pid {}", info.version, info.pid)).color(pal::dim()));
             ui.horizontal(|ui| {
-                ui.label(RichText::new(&info.data_dir).monospace().size(12.0).color(DIM));
+                ui.label(RichText::new(&info.data_dir).monospace().size(12.0).color(pal::dim()));
                 if ui.small_button("Open folder").on_hover_text("Projects, logs and settings.json").clicked() {
                     let _ = std::process::Command::new(if cfg!(windows) { "explorer" } else { "xdg-open" })
                         .arg(&info.data_dir)
@@ -313,11 +323,11 @@ fn settings(
             ui.label(
                 RichText::new("Log retention, file size and error/warning patterns are in settings.json in that folder; the host reads it when it starts.")
                     .size(12.0)
-                    .color(DIM),
+                    .color(pal::dim()),
             );
         }
         None => {
-            ui.label(RichText::new("Not connected.").color(DIM));
+            ui.label(RichText::new("Not connected.").color(pal::dim()));
         }
     }
     buttons(ui, "Save", true)
