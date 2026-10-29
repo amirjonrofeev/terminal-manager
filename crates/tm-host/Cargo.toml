@@ -11,7 +11,14 @@ alacritty_terminal.workspace = true
 interprocess.workspace = true
 log.workspace = true
 polling.workspace = true
+serde.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+rpassword = "7.5"
+widestring = "1.0.2"
+windows-service = "0.8.1"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authentication_Identity", "Win32_Security_Authorization"] }

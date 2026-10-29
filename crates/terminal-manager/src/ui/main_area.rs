@@ -34,14 +34,28 @@ pub fn show(app: &mut App, ui: &mut Ui) {
 
         let connection = match &app.connection {
             Connection::Connected(_) => None,
-            Connection::Connecting => Some("Connecting to the background host…".to_string()),
-            Connection::Disconnected(reason) => Some(format!("{reason} Retrying…")),
+            Connection::Connecting => Some(("Connecting to the background host…".to_string(), false)),
+            Connection::Disconnected(reason) => Some((format!("{reason} Retrying…"), false)),
+            Connection::Denied(reason) => Some((reason.clone(), true)),
         };
-        if let Some(msg) = connection {
+        if let Some((msg, denied)) = connection {
             Panel::top("connection")
                 .frame(Frame::new().fill(BAD.gamma_multiply(0.16)).inner_margin(Margin::symmetric(14, 8)))
                 .show(ui, |ui| {
-                    ui.label(RichText::new(msg).color(FG));
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(msg).color(FG));
+                        if denied && cfg!(windows) {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui.button("Restart as administrator").clicked() {
+                                    if crate::client::restart_elevated() {
+                                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                                    } else {
+                                        app.banner = Some("Could not restart as administrator (the prompt was cancelled or failed).".into());
+                                    }
+                                }
+                            });
+                        }
+                    });
                 });
         }
 

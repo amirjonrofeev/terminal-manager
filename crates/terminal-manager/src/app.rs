@@ -38,6 +38,7 @@ pub enum Connection {
     Connecting,
     Connected(HostInfo),
     Disconnected(String),
+    Denied(String),
 }
 
 #[derive(Clone, Debug)]
@@ -312,6 +313,10 @@ impl App {
                 }
                 ClientEvent::Disconnected(reason) => {
                     self.connection = Connection::Disconnected(reason);
+                    self.attached.clear();
+                }
+                ClientEvent::Denied(reason) => {
+                    self.connection = Connection::Denied(reason);
                     self.attached.clear();
                 }
                 ClientEvent::Msg(msg) => self.handle_host(msg),

@@ -8,9 +8,13 @@ mod logger;
 #[allow(dead_code)]
 mod pty_loop;
 mod server;
+#[cfg(windows)]
+pub mod service;
 mod terminal;
 
+use serde::{Deserialize, Serialize};
 use std::io;
+use std::sync::Arc;
 use tm_core::model::Workspace;
 use tm_core::paths::{self, HostMode};
 use tm_core::protocol::HostInfo;
@@ -18,9 +22,32 @@ use tm_core::{ipc, persist};
 
 pub use host::Host;
 
-/// Runs a host until the process is killed. Returns an error if it cannot listen, for example
-/// because another host already owns the socket.
-pub fn run(mode: HostMode, echo_log: bool) -> io::Result<()> {
+/// Service settings written by `tm-host install` (`service.json` in the data dir).
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct ServiceConfig {
+    /// SIDs, besides SYSTEM, Administrators and the service account, allowed to connect.
+    pub allow: Vec<String>,
+}
+
+/// Who may connect to the pipe, as SDDL. Controlling the host means running commands as its
+/// account, so a service admits only SYSTEM, elevated Administrators, the service account
+/// (the pipe's owner) and accounts given with `install --allow`; a per-user host admits only
+/// its own user.
+fn pipe_sddl(mode: HostMode, data_dir: &std::path::Path) -> String {
+    match mode {
+        HostMode::Service => {
+            let config = persist::load::<ServiceConfig>(&data_dir.join("service.json")).value;
+            let extra: String = config.allow.iter().map(|sid| format!("(A;;GA;;;{sid})")).collect();
+            format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW){extra}")
+        }
+        HostMode::User => "D:P(A;;GA;;;SY)(A;;GA;;;OW)".into(),
+    }
+}
+
+/// Starts a host: listens on the mode's socket and serves clients on a background thread.
+/// Fails if another host already owns the socket.
+pub fn start(mode: HostMode, echo_log: bool) -> io::Result<Arc<Host>> {
     let data_dir = paths::data_dir(mode);
     let socket = paths::socket_name(mode);
     logger::init(&data_dir, echo_log);
@@ -28,7 +55,7 @@ pub fn run(mode: HostMode, echo_log: bool) -> io::Result<()> {
     if ipc::connect(&socket).is_ok() {
         return Err(io::Error::new(io::ErrorKind::AddrInUse, format!("a host is already running on {socket}")));
     }
-    let listener = ipc::listen(&socket)?;
+    let listener = ipc::listen(&socket, Some(&pipe_sddl(mode, &data_dir)))?;
     alacritty_terminal::tty::setup_env();
 
     let ws = load_workspace(mode, &data_dir);
@@ -40,8 +67,17 @@ pub fn run(mode: HostMode, echo_log: bool) -> io::Result<()> {
     };
     log::info!("host {} started ({mode:?}) on {socket}, data in {}", info.version, data_dir.display());
     let host = Host::new(info, data_dir, ws);
-    server::serve(host, listener);
-    Ok(())
+    let serving = host.clone();
+    std::thread::Builder::new().name("accept".into()).spawn(move || server::serve(serving, listener))?;
+    Ok(host)
+}
+
+/// Runs a host until the process is killed.
+pub fn run(mode: HostMode, echo_log: bool) -> io::Result<()> {
+    let _host = start(mode, echo_log)?;
+    loop {
+        std::thread::park();
+    }
 }
 
 /// Loads the host workspace. A per-user host with no workspace yet imports the one the v0.1

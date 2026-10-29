@@ -20,9 +20,9 @@ pub fn connect(socket: &str) -> io::Result<Stream> {
     Stream::connect(name(socket)?)
 }
 
-/// Listens on `socket`. On Unix a stale socket file is replaced and the socket is made
-/// private to the current user.
-pub fn listen(socket: &str) -> io::Result<Listener> {
+/// Listens on `socket`. On Windows `sddl` sets who may connect to the pipe (an SDDL security
+/// descriptor); on Unix a stale socket file is replaced and the socket is private to its owner.
+pub fn listen(socket: &str, #[allow(unused_variables)] sddl: Option<&str>) -> io::Result<Listener> {
     let mut opts = ListenerOptions::new().name(name(socket)?);
     #[cfg(unix)]
     {
@@ -35,7 +35,13 @@ pub fn listen(socket: &str) -> io::Result<Listener> {
     }
     #[cfg(windows)]
     {
+        use interprocess::os::windows::local_socket::ListenerOptionsExt;
+        use interprocess::os::windows::security_descriptor::SecurityDescriptor;
         opts = opts.reclaim_name(false);
+        if let Some(sddl) = sddl {
+            let wide = widestring::U16CString::from_str(sddl).map_err(io::Error::other)?;
+            opts = opts.security_descriptor(SecurityDescriptor::deserialize(&wide)?);
+        }
     }
     opts.create_sync()
 }
@@ -86,6 +92,19 @@ mod tests {
         }
         assert_eq!(read_frame::<_, ClientMsg>(&mut r).unwrap(), ClientMsg::Hello { version: 1 });
         assert!(read_frame::<_, ClientMsg>(&mut r).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pipe_acl_is_enforced() {
+        let open = format!("tm-acl-open-{}", uuid::Uuid::new_v4());
+        let _l = listen(&open, Some("D:P(A;;GA;;;SY)(A;;GA;;;OW)")).unwrap();
+        assert!(connect(&open).is_ok(), "the owner may connect");
+
+        let system_only = format!("tm-acl-closed-{}", uuid::Uuid::new_v4());
+        let _l = listen(&system_only, Some("D:P(A;;GA;;;SY)")).unwrap();
+        let err = connect(&system_only).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
     }
 
     #[test]

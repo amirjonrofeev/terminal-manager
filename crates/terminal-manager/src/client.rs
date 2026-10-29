@@ -14,6 +14,8 @@ pub enum ClientEvent {
     Msg(HostMsg),
     /// Lost or couldn't get a connection; the text says why. The client keeps retrying.
     Disconnected(String),
+    /// The service is running but this process may not use it (not elevated).
+    Denied(String),
 }
 
 pub struct HostClient {
@@ -59,7 +61,7 @@ fn run(out_rx: Receiver<ClientMsg>, events: Sender<ClientEvent>, ctx: egui::Cont
             }
             Err(Failure::Denied(msg)) => {
                 if msg != last_error {
-                    notify(ClientEvent::Disconnected(msg.clone()));
+                    notify(ClientEvent::Denied(msg.clone()));
                     last_error = msg;
                 }
             }
@@ -94,7 +96,7 @@ fn connect_any() -> Result<Stream, Failure> {
             Ok(s) => return Ok(s),
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && mode == HostMode::Service => {
                 return Err(Failure::Denied(
-                    "The Terminal Manager service is running, but this account isn't allowed to use it. Open Terminal Manager as an administrator.".into(),
+                    "The Terminal Manager service is running, but this window isn't allowed to use it. Run Terminal Manager as an administrator.".into(),
                 ));
             }
             Err(_) => {}
@@ -158,6 +160,24 @@ fn session(stream: Stream, out_rx: &Receiver<ClientMsg>, notify: &impl Fn(Client
             Err(RecvTimeoutError::Disconnected) => return "closed".into(),
         }
     }
+}
+
+/// Starts this program again elevated (UAC prompt). Returns false if that couldn't be started.
+pub fn restart_elevated() -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let Ok(exe) = std::env::current_exe() else { return false };
+        let path = exe.display().to_string().replace('\'', "''");
+        return std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &format!("Start-Process -FilePath '{path}' -Verb RunAs")])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .is_ok_and(|s| s.success());
+    }
+    #[allow(unreachable_code)]
+    false
 }
 
 /// Starts `<this exe> --host` detached, so it keeps running after the GUI closes.
