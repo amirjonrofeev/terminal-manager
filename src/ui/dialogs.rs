@@ -47,11 +47,17 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         Dialog::Terminal { draft, .. } => app.status(draft.id).is_running(),
         _ => false,
     };
+    let terminal_project = match &dialog {
+        Dialog::Terminal { project, .. } => app.ws.project(*project).cloned(),
+        _ => None,
+    };
     let modal = Modal::new(Id::unique("dialog")).show(ctx, |ui| {
         ui.set_width(460.0);
         match &mut dialog {
             Dialog::Project { draft, is_new } => project_editor(ui, draft, *is_new),
-            Dialog::Terminal { draft, is_new, .. } => terminal_editor(ui, draft, *is_new, running_in_project),
+            Dialog::Terminal { draft, is_new, .. } => {
+                terminal_editor(ui, draft, *is_new, running_in_project, terminal_project.as_ref())
+            }
             Dialog::Confirm { title, message, confirm_label, .. } => confirm(ui, title, message, confirm_label),
         }
     });
@@ -129,7 +135,7 @@ fn project_editor(ui: &mut Ui, p: &mut Project, is_new: bool) -> Outcome {
     buttons(ui, if is_new { "Add project" } else { "Save" }, !p.name.trim().is_empty() && root_ok)
 }
 
-fn terminal_editor(ui: &mut Ui, t: &mut TerminalSpec, is_new: bool, running: bool) -> Outcome {
+fn terminal_editor(ui: &mut Ui, t: &mut TerminalSpec, is_new: bool, running: bool, project: Option<&Project>) -> Outcome {
     heading(ui, if is_new { "New terminal" } else { "Edit terminal" });
     Grid::new("terminal-form").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
         ui.label(RichText::new("Name").color(DIM));
@@ -150,14 +156,30 @@ fn terminal_editor(ui: &mut Ui, t: &mut TerminalSpec, is_new: bool, running: boo
         ui.end_row();
 
         ui.label(RichText::new("Working dir").color(DIM));
-        ui.add(
-            TextEdit::singleline(&mut t.cwd)
-                .hint_text("relative to project folder (empty = folder)")
-                .font(egui::TextStyle::Monospace)
-                .desired_width(f32::INFINITY),
-        );
+        ui.horizontal(|ui| {
+            ui.add(
+                TextEdit::singleline(&mut t.cwd)
+                    .hint_text("project folder")
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(ui.available_width() - 80.0),
+            );
+            if let Some(p) = project
+                && ui.button("Browse…").on_hover_text("Pick a folder; inside the project it's saved as a relative path").clicked()
+            {
+                let start = Some(p.resolve_cwd(&t.cwd)).filter(|d| d.is_dir()).unwrap_or_else(|| p.root.clone());
+                if let Some(dir) = rfd::FileDialog::new().set_title("Choose the working folder").set_directory(start).pick_folder() {
+                    t.cwd = p.cwd_for(&dir);
+                }
+            }
+        });
         ui.end_row();
     });
+    if let Some(p) = project {
+        let dir = p.resolve_cwd(&t.cwd);
+        if !dir.is_dir() {
+            ui.label(RichText::new(format!("Folder not found: {}", dir.display())).size(12.0).color(BAD));
+        }
+    }
     ui.add_space(10.0);
     ui.label(RichText::new("Environment variables").color(DIM));
     env_editor(ui, "terminal-env", &mut t.env);

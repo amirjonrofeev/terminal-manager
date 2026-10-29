@@ -66,7 +66,7 @@ impl Session {
         self.generation += 1;
         self.title = None;
 
-        let cwd = if spec.cwd.trim().is_empty() { project.root.clone() } else { project.root.join(spec.cwd.trim()) };
+        let cwd = project.resolve_cwd(&spec.cwd);
         if !cwd.is_dir() {
             self.status = Status::Failed(format!("Folder not found: {}", cwd.display()));
             self.backend = None;

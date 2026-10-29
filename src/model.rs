@@ -1,7 +1,7 @@
 //! Saved state: everything here is written to `workspace.json`.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 pub const WORKSPACE_VERSION: u32 = 1;
@@ -73,6 +73,21 @@ impl Project {
     pub fn terminal(&self, id: Uuid) -> Option<&TerminalSpec> {
         self.terminals.iter().find(|t| t.id == id)
     }
+
+    /// Absolute working dir for a terminal's `cwd` (empty means the project root).
+    pub fn resolve_cwd(&self, cwd: &str) -> PathBuf {
+        let cwd = cwd.trim();
+        if cwd.is_empty() { self.root.clone() } else { self.root.join(cwd) }
+    }
+
+    /// The `cwd` value to store for a picked folder: relative when it is inside the project, so
+    /// the project can be moved; absolute otherwise.
+    pub fn cwd_for(&self, picked: &Path) -> String {
+        match picked.strip_prefix(&self.root) {
+            Ok(rel) => rel.display().to_string(),
+            Err(_) => picked.display().to_string(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -121,4 +136,19 @@ pub enum ShellKind {
     Zsh,
     Wsl,
     Custom { program: String, args: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn picked_cwd_is_relative_inside_project() {
+        let p = Project { root: PathBuf::from("/work/shop"), ..Default::default() };
+        assert_eq!(p.cwd_for(Path::new("/work/shop")), "");
+        assert_eq!(PathBuf::from(p.cwd_for(Path::new("/work/shop/apps/web"))), PathBuf::from("apps/web"));
+        assert_eq!(p.cwd_for(Path::new("/elsewhere/api")), Path::new("/elsewhere/api").display().to_string());
+        assert_eq!(p.resolve_cwd("  "), PathBuf::from("/work/shop"));
+        assert_eq!(p.resolve_cwd("apps/web"), PathBuf::from("/work/shop/apps/web"));
+    }
 }
