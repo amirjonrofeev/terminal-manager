@@ -1,0 +1,17 @@
+[package]
+name = "tm-host"
+description = "Terminal Manager host: owns terminal processes, keeps them running without the GUI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tm-core.workspace = true
+alacritty_terminal.workspace = true
+interprocess.workspace = true
+log.workspace = true
+polling.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true

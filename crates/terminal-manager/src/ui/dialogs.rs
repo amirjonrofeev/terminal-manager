@@ -2,14 +2,13 @@
 
 use super::{ACCENT, BAD, DIM, FG};
 use crate::app::App;
-use crate::model::{EnvVar, Project, ShellKind, TerminalSpec};
-use crate::shell;
+use tm_core::model::{EnvVar, Project, ShellKind, TerminalSpec};
+use tm_core::shell;
 use egui::{Grid, Id, Modal, RichText, TextEdit, Ui};
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
 pub enum ConfirmAction {
-    Quit,
     RemoveProject(Uuid),
     RemoveTerminal(Uuid, Uuid),
 }

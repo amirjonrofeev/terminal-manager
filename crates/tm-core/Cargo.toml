@@ -1,0 +1,15 @@
+[package]
+name = "tm-core"
+description = "Shared model, persistence, shell resolution and IPC protocol for Terminal Manager"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+directories.workspace = true
+interprocess.workspace = true
+postcard.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true

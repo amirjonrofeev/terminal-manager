@@ -1,4 +1,5 @@
-//! Saved state: everything here is written to `workspace.json`.
+//! Saved state owned by the host: everything here is written to `workspace.json`.
+//! Per-user UI state (window, selected project and tab) lives in the GUI instead.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -11,13 +12,11 @@ pub const WORKSPACE_VERSION: u32 = 1;
 pub struct Workspace {
     pub version: u32,
     pub projects: Vec<Project>,
-    pub active_project: Option<Uuid>,
-    pub window: Option<WindowState>,
 }
 
 impl Default for Workspace {
     fn default() -> Self {
-        Self { version: WORKSPACE_VERSION, projects: Vec::new(), active_project: None, window: None }
+        Self { version: WORKSPACE_VERSION, projects: Vec::new() }
     }
 }
 
@@ -29,15 +28,11 @@ impl Workspace {
     pub fn project_mut(&mut self, id: Uuid) -> Option<&mut Project> {
         self.projects.iter_mut().find(|p| p.id == id)
     }
-}
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
-pub struct WindowState {
-    pub width: f32,
-    pub height: f32,
-    pub x: Option<f32>,
-    pub y: Option<f32>,
-    pub maximized: bool,
+    /// Finds a terminal and the project it belongs to.
+    pub fn terminal(&self, id: Uuid) -> Option<(&Project, &TerminalSpec)> {
+        self.projects.iter().find_map(|p| p.terminal(id).map(|t| (p, t)))
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -49,7 +44,6 @@ pub struct Project {
     pub default_shell: ShellKind,
     pub env: Vec<EnvVar>,
     pub terminals: Vec<TerminalSpec>,
-    pub active_tab: Option<Uuid>,
     /// Open projects are restored (and their auto-start terminals run) at launch.
     pub open: bool,
 }
@@ -63,7 +57,6 @@ impl Default for Project {
             default_shell: ShellKind::Default,
             env: Vec::new(),
             terminals: Vec::new(),
-            active_tab: None,
             open: true,
         }
     }

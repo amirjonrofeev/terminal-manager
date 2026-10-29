@@ -1,53 +1,35 @@
-//! Loading and saving `workspace.json` in the user's config directory.
+//! Loading and saving JSON state files (the host's workspace, the GUI's UI state).
 
-use crate::model::Workspace;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-pub fn config_dir() -> PathBuf {
-    directories::BaseDirs::new()
-        .map(|d| d.config_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("terminal-manager")
-}
-
-/// `TERMINAL_MANAGER_WORKSPACE` overrides the location (handy for testing a separate workspace).
-pub fn workspace_path() -> PathBuf {
-    match std::env::var_os("TERMINAL_MANAGER_WORKSPACE") {
-        Some(p) if !p.is_empty() => PathBuf::from(p),
-        _ => config_dir().join("workspace.json"),
-    }
-}
-
-pub struct Loaded {
-    pub workspace: Workspace,
+pub struct Loaded<T> {
+    pub value: T,
     /// Set when the file existed but could not be read; it was kept as `.bak`.
     pub warning: Option<String>,
 }
 
-pub fn load(path: &Path) -> Loaded {
+pub fn load<T: DeserializeOwned + Default>(path: &Path) -> Loaded<T> {
     let text = match fs::read_to_string(path) {
         Ok(t) => t,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            return Loaded { workspace: Workspace::default(), warning: None };
-        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Loaded { value: T::default(), warning: None },
         Err(e) => {
-            return Loaded {
-                workspace: Workspace::default(),
-                warning: Some(format!("Could not read {}: {e}", path.display())),
-            };
+            return Loaded { value: T::default(), warning: Some(format!("Could not read {}: {e}", path.display())) };
         }
     };
-    match serde_json::from_str::<Workspace>(&text) {
-        Ok(workspace) => Loaded { workspace, warning: None },
+    match serde_json::from_str::<T>(&text) {
+        Ok(value) => Loaded { value, warning: None },
         Err(e) => {
             let bak = path.with_extension("json.bak");
             let _ = fs::rename(path, &bak);
             Loaded {
-                workspace: Workspace::default(),
+                value: T::default(),
                 warning: Some(format!(
-                    "workspace.json could not be parsed ({e}). It was kept as {} and an empty workspace was started.",
+                    "{} could not be parsed ({e}). It was kept as {} and an empty one was started.",
+                    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                     bak.display()
                 )),
             }
@@ -56,11 +38,11 @@ pub fn load(path: &Path) -> Loaded {
 }
 
 /// Writes to a temporary file and renames it over the target, so a crash never leaves a half-written file.
-pub fn save(path: &Path, workspace: &Workspace) -> io::Result<()> {
+pub fn save<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let json = serde_json::to_string_pretty(workspace).map_err(io::Error::other)?;
+    let json = serde_json::to_string_pretty(value).map_err(io::Error::other)?;
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, json)?;
     fs::rename(&tmp, path)
@@ -69,10 +51,11 @@ pub fn save(path: &Path, workspace: &Workspace) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{EnvVar, Project, ShellKind, TerminalSpec};
+    use crate::model::{EnvVar, Project, ShellKind, TerminalSpec, Workspace};
+    use std::path::PathBuf;
 
     fn temp_path(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pm-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("tm-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir.join(name)
     }
@@ -89,37 +72,41 @@ mod tests {
             shell: ShellKind::Custom { program: "nu".into(), args: "-l".into() },
             ..Default::default()
         });
-        ws.active_project = Some(project.id);
         ws.projects.push(project);
 
         save(&path, &ws).unwrap();
-        let loaded = load(&path);
+        let loaded = load::<Workspace>(&path);
         assert!(loaded.warning.is_none());
-        assert_eq!(loaded.workspace, ws);
+        assert_eq!(loaded.value, ws);
     }
 
     #[test]
     fn missing_file_is_empty() {
-        let loaded = load(&temp_path("nope.json"));
+        let loaded = load::<Workspace>(&temp_path("nope.json"));
         assert!(loaded.warning.is_none());
-        assert!(loaded.workspace.projects.is_empty());
+        assert!(loaded.value.projects.is_empty());
     }
 
     #[test]
     fn corrupt_file_is_backed_up() {
         let path = temp_path("workspace.json");
         fs::write(&path, "{ not json").unwrap();
-        let loaded = load(&path);
+        let loaded = load::<Workspace>(&path);
         assert!(loaded.warning.is_some());
         assert!(path.with_extension("json.bak").exists());
         assert!(!path.exists());
     }
 
     #[test]
-    fn missing_fields_use_defaults() {
+    fn old_files_load_with_defaults() {
+        // v0.1 files had UI fields (active_project, window, active_tab) that now live in the GUI.
         let path = temp_path("workspace.json");
-        fs::write(&path, r#"{"projects":[{"name":"x","terminals":[{"command":"ls"}]}]}"#).unwrap();
-        let ws = load(&path).workspace;
+        fs::write(
+            &path,
+            r#"{"active_project":null,"window":null,"projects":[{"name":"x","active_tab":null,"terminals":[{"command":"ls"}]}]}"#,
+        )
+        .unwrap();
+        let ws = load::<Workspace>(&path).value;
         let t = &ws.projects[0].terminals[0];
         assert_eq!(t.command, "ls");
         assert!(t.auto_start);

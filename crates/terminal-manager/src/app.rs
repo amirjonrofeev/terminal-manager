@@ -1,18 +1,44 @@
-//! App state and the actions the UI can trigger.
+//! App state and the actions the UI can trigger. The host owns projects and processes; the app
+//! mirrors its workspace, renders terminal screens, and keeps per-user UI state.
 
-use crate::model::{Project, TerminalSpec, WindowState, Workspace};
-use crate::persist;
-use crate::session::{EventKey, Session, Status};
-use crate::term::TermEvent;
+use crate::client::{ClientEvent, HostClient};
+use crate::term::Screen;
 use crate::ui;
 use crate::ui::dialogs::{ConfirmAction, Dialog};
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
+use tm_core::model::{Project, TerminalSpec, Workspace};
+use tm_core::persist;
+use tm_core::protocol::{ClientMsg, HostInfo, HostMsg, Status, TerminalState};
 use uuid::Uuid;
 
 const SAVE_DEBOUNCE: Duration = Duration::from_secs(1);
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct WindowState {
+    pub width: f32,
+    pub height: f32,
+    pub x: Option<f32>,
+    pub y: Option<f32>,
+    pub maximized: bool,
+}
+
+/// Per-user view state, saved in `ui.json`.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct UiState {
+    pub active_project: Option<Uuid>,
+    pub active_tab: HashMap<Uuid, Uuid>,
+    pub window: Option<WindowState>,
+}
+
+pub enum Connection {
+    Connecting,
+    Connected(HostInfo),
+    Disconnected(String),
+}
 
 #[derive(Clone, Debug)]
 pub enum Action {
@@ -29,7 +55,7 @@ pub enum Action {
     EditTerminal(Uuid, Uuid),
     DuplicateTerminal(Uuid, Uuid),
     RemoveTerminal(Uuid, Uuid),
-    Start(Uuid, Uuid),
+    Start(Uuid),
     Stop(Uuid),
     NextTab(i32),
     DismissBanner,
@@ -45,67 +71,68 @@ pub enum Rollup {
 
 pub struct App {
     pub ws: Workspace,
-    pub sessions: HashMap<Uuid, Session>,
-    events_tx: Sender<(EventKey, TermEvent)>,
-    events_rx: Receiver<(EventKey, TermEvent)>,
-    ctx: egui::Context,
-    store_path: PathBuf,
+    pub screens: HashMap<Uuid, Screen>,
+    pub states: HashMap<Uuid, TerminalState>,
+    pub connection: Connection,
+    pub ui: UiState,
+    client: HostClient,
+    attached: HashSet<Uuid>,
+    ui_path: PathBuf,
     dirty: bool,
     last_save: Instant,
-    pub save_error: Option<String>,
     pub banner: Option<String>,
     pub dialog: Option<Dialog>,
     pub focus_terminal: bool,
-    allow_quit: bool,
     actions: Vec<Action>,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, store_path: PathBuf, loaded: persist::Loaded) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, ui_path: PathBuf, ui_state: persist::Loaded<UiState>) -> Self {
         ui::setup(&cc.egui_ctx);
-        let (events_tx, events_rx) = mpsc::channel();
-        let mut app = Self {
-            ws: loaded.workspace,
-            sessions: HashMap::new(),
-            events_tx,
-            events_rx,
-            ctx: cc.egui_ctx.clone(),
-            store_path,
+        Self {
+            ws: Workspace::default(),
+            screens: HashMap::new(),
+            states: HashMap::new(),
+            connection: Connection::Connecting,
+            ui: ui_state.value,
+            client: HostClient::start(cc.egui_ctx.clone()),
+            attached: HashSet::new(),
+            ui_path,
             dirty: false,
             last_save: Instant::now(),
-            save_error: None,
-            banner: loaded.warning,
+            banner: ui_state.warning,
             dialog: None,
             focus_terminal: true,
-            allow_quit: false,
             actions: Vec::new(),
-        };
-        if app.ws.active_project.and_then(|id| app.ws.project(id)).is_none_or(|p| !p.open) {
-            app.ws.active_project = app.ws.projects.iter().find(|p| p.open).map(|p| p.id);
         }
-        let open: Vec<Uuid> = app.ws.projects.iter().filter(|p| p.open).map(|p| p.id).collect();
-        for id in open {
-            app.auto_start(id);
-        }
-        app
     }
 
     // ---------- queries ----------
 
+    pub fn is_connected(&self) -> bool {
+        matches!(self.connection, Connection::Connected(_))
+    }
+
     pub fn active_project(&self) -> Option<&Project> {
-        self.ws.active_project.and_then(|id| self.ws.project(id))
+        self.ui.active_project.and_then(|id| self.ws.project(id)).filter(|p| p.open)
     }
 
     /// The selected tab of a project, falling back to its first terminal.
-    pub fn active_tab(project: &Project) -> Option<Uuid> {
-        project
+    pub fn active_tab(&self, project: &Project) -> Option<Uuid> {
+        self.ui
             .active_tab
+            .get(&project.id)
+            .copied()
             .filter(|id| project.terminal(*id).is_some())
             .or_else(|| project.terminals.first().map(|t| t.id))
     }
 
+    pub fn state(&self, terminal: Uuid) -> TerminalState {
+        self.states.get(&terminal).cloned().unwrap_or_else(|| TerminalState::new(terminal))
+    }
+
     pub fn status(&self, terminal: Uuid) -> Status {
-        self.sessions.get(&terminal).map(|s| s.status.clone()).unwrap_or(Status::NotStarted)
+        self.states.get(&terminal).map(|s| s.status.clone()).unwrap_or(Status::NotStarted)
     }
 
     pub fn running_count(&self, project: &Project) -> usize {
@@ -127,52 +154,31 @@ impl App {
         }
     }
 
-    pub fn total_running(&self) -> usize {
-        self.sessions.values().filter(|s| s.status.is_running()).count()
-    }
-
     // ---------- actions ----------
 
     pub fn push(&mut self, action: Action) {
         self.actions.push(action);
     }
 
-    pub fn mark_dirty(&mut self) {
+    fn send(&self, msg: ClientMsg) {
+        self.client.send(msg);
+    }
+
+    fn mark_dirty(&mut self) {
         self.dirty = true;
     }
 
-    fn start(&mut self, project_id: Uuid, terminal_id: Uuid) {
-        let Some(project) = self.ws.project(project_id) else { return };
-        let Some(spec) = project.terminal(terminal_id) else { return };
-        self.sessions.entry(terminal_id).or_default().start(project, spec, &self.events_tx, &self.ctx);
-    }
-
-    fn stop(&mut self, terminal_id: Uuid) {
-        if let Some(s) = self.sessions.get_mut(&terminal_id) {
-            s.stop();
-        }
-    }
-
-    fn auto_start(&mut self, project_id: Uuid) {
-        let Some(project) = self.ws.project(project_id) else { return };
-        let ids: Vec<Uuid> = project
-            .terminals
-            .iter()
-            .filter(|t| t.auto_start && !self.status(t.id).is_running())
-            .map(|t| t.id)
-            .collect();
-        for id in ids {
-            self.start(project_id, id);
-        }
-    }
-
-    fn terminal_ids(&self, project_id: Uuid) -> Vec<Uuid> {
-        self.ws.project(project_id).map(|p| p.terminals.iter().map(|t| t.id).collect()).unwrap_or_default()
-    }
-
     fn select_project(&mut self, id: Uuid) {
-        if self.ws.active_project != Some(id) {
-            self.ws.active_project = Some(id);
+        if self.ui.active_project != Some(id) {
+            self.ui.active_project = Some(id);
+            self.mark_dirty();
+        }
+        self.focus_terminal = true;
+    }
+
+    fn select_tab(&mut self, pid: Uuid, tid: Uuid) {
+        if self.ui.active_tab.get(&pid) != Some(&tid) {
+            self.ui.active_tab.insert(pid, tid);
             self.mark_dirty();
         }
         self.focus_terminal = true;
@@ -195,25 +201,10 @@ impl App {
                 }
             }
             Action::OpenProject(id) => {
-                if let Some(p) = self.ws.project_mut(id) {
-                    p.open = true;
-                }
-                self.auto_start(id);
+                self.send(ClientMsg::SetProjectOpen { project: id, open: true });
                 self.select_project(id);
-                self.mark_dirty();
             }
-            Action::CloseProject(id) => {
-                for t in self.terminal_ids(id) {
-                    self.stop(t);
-                }
-                if let Some(p) = self.ws.project_mut(id) {
-                    p.open = false;
-                }
-                if self.ws.active_project == Some(id) {
-                    self.ws.active_project = self.ws.projects.iter().find(|p| p.open).map(|p| p.id);
-                }
-                self.mark_dirty();
-            }
+            Action::CloseProject(id) => self.send(ClientMsg::SetProjectOpen { project: id, open: false }),
             Action::RemoveProject(id) => {
                 if let Some(p) = self.ws.project(id) {
                     self.dialog = Some(Dialog::confirm(
@@ -225,25 +216,9 @@ impl App {
                     ));
                 }
             }
-            Action::StartAll(id) => {
-                for t in self.terminal_ids(id) {
-                    if !self.status(t).is_running() {
-                        self.start(id, t);
-                    }
-                }
-            }
-            Action::StopAll(id) => {
-                for t in self.terminal_ids(id) {
-                    self.stop(t);
-                }
-            }
-            Action::SelectTab(pid, tid) => {
-                if let Some(p) = self.ws.project_mut(pid) {
-                    p.active_tab = Some(tid);
-                }
-                self.focus_terminal = true;
-                self.mark_dirty();
-            }
+            Action::StartAll(id) => self.send(ClientMsg::StartAll(id)),
+            Action::StopAll(id) => self.send(ClientMsg::StopAll(id)),
+            Action::SelectTab(pid, tid) => self.select_tab(pid, tid),
             Action::NewTerminal(pid) => {
                 if let Some(p) = self.ws.project(pid) {
                     let name = format!("terminal {}", p.terminals.len() + 1);
@@ -256,15 +231,15 @@ impl App {
                 }
             }
             Action::DuplicateTerminal(pid, tid) => {
-                if let Some(p) = self.ws.project_mut(pid)
+                if let Some(p) = self.ws.project(pid)
                     && let Some(i) = p.terminals.iter().position(|t| t.id == tid)
                 {
                     let mut copy = p.terminals[i].clone();
                     copy.id = Uuid::new_v4();
                     copy.name = format!("{} copy", copy.name);
-                    p.active_tab = Some(copy.id);
-                    p.terminals.insert(i + 1, copy);
-                    self.mark_dirty();
+                    let id = copy.id;
+                    self.send(ClientMsg::UpsertTerminal { project: pid, spec: copy, index: Some(i + 1) });
+                    self.select_tab(pid, id);
                 }
             }
             Action::RemoveTerminal(pid, tid) => {
@@ -277,21 +252,21 @@ impl App {
                     ));
                 }
             }
-            Action::Start(pid, tid) => {
-                self.start(pid, tid);
+            Action::Start(tid) => {
+                self.send(ClientMsg::Start(tid));
                 self.focus_terminal = true;
             }
-            Action::Stop(tid) => self.stop(tid),
+            Action::Stop(tid) => self.send(ClientMsg::Stop(tid)),
             Action::NextTab(delta) => {
                 if let Some(p) = self.active_project()
                     && !p.terminals.is_empty()
-                    && let Some(cur) = Self::active_tab(p)
+                    && let Some(cur) = self.active_tab(p)
                 {
                     let n = p.terminals.len() as i32;
                     let i = p.terminals.iter().position(|t| t.id == cur).unwrap_or(0) as i32;
                     let next = p.terminals[((i + delta).rem_euclid(n)) as usize].id;
                     let pid = p.id;
-                    self.apply(Action::SelectTab(pid, next));
+                    self.select_tab(pid, next);
                 }
             }
             Action::DismissBanner => self.banner = None,
@@ -302,67 +277,97 @@ impl App {
     pub fn dialog_confirmed(&mut self, dialog: Dialog) {
         match dialog {
             Dialog::Project { draft, is_new } => {
+                let id = draft.id;
+                self.send(ClientMsg::UpsertProject(draft));
                 if is_new {
-                    let id = draft.id;
-                    self.ws.projects.push(draft);
-                    self.auto_start(id);
                     self.select_project(id);
-                } else if let Some(p) = self.ws.project_mut(draft.id) {
-                    p.name = draft.name;
-                    p.root = draft.root;
-                    p.default_shell = draft.default_shell;
-                    p.env = draft.env;
                 }
             }
             Dialog::Terminal { project, draft, is_new } => {
-                let Some(p) = self.ws.project_mut(project) else { return };
                 let id = draft.id;
+                self.send(ClientMsg::UpsertTerminal { project, spec: draft, index: None });
                 if is_new {
-                    p.terminals.push(draft);
-                    p.active_tab = Some(id);
-                    self.start(project, id);
-                    self.focus_terminal = true;
-                } else if let Some(slot) = p.terminals.iter_mut().find(|t| t.id == id) {
-                    *slot = draft;
+                    self.send(ClientMsg::Start(id));
+                    self.select_tab(project, id);
                 }
             }
             Dialog::Confirm { action, .. } => match action {
-                ConfirmAction::Quit => {
-                    self.allow_quit = true;
-                    self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-                ConfirmAction::RemoveProject(id) => {
-                    for t in self.terminal_ids(id) {
-                        self.sessions.remove(&t);
-                    }
-                    self.ws.projects.retain(|p| p.id != id);
-                    if self.ws.active_project == Some(id) {
-                        self.ws.active_project = self.ws.projects.iter().find(|p| p.open).map(|p| p.id);
-                    }
-                }
-                ConfirmAction::RemoveTerminal(pid, tid) => {
-                    self.sessions.remove(&tid);
-                    if let Some(p) = self.ws.project_mut(pid) {
-                        p.terminals.retain(|t| t.id != tid);
-                        if p.active_tab == Some(tid) {
-                            p.active_tab = p.terminals.first().map(|t| t.id);
-                        }
-                    }
+                ConfirmAction::RemoveProject(id) => self.send(ClientMsg::RemoveProject(id)),
+                ConfirmAction::RemoveTerminal(project, terminal) => {
+                    self.send(ClientMsg::RemoveTerminal { project, terminal })
                 }
             },
         }
-        self.mark_dirty();
     }
 
-    // ---------- per-frame housekeeping ----------
+    // ---------- host messages ----------
 
-    fn pump_events(&mut self) {
-        while let Ok(((tid, generation), event)) = self.events_rx.try_recv() {
-            if let Some(s) = self.sessions.get_mut(&tid) {
-                s.handle(generation, event);
+    fn pump_host(&mut self) {
+        while let Some(event) = self.client.try_recv() {
+            match event {
+                ClientEvent::Connected(info) => {
+                    self.connection = Connection::Connected(info);
+                    // Fresh connection: every terminal needs a new replay.
+                    self.attached.clear();
+                }
+                ClientEvent::Disconnected(reason) => {
+                    self.connection = Connection::Disconnected(reason);
+                    self.attached.clear();
+                }
+                ClientEvent::Msg(msg) => self.handle_host(msg),
             }
         }
     }
+
+    fn handle_host(&mut self, msg: HostMsg) {
+        match msg {
+            HostMsg::Welcome(info) => self.connection = Connection::Connected(info),
+            HostMsg::Workspace(ws) => {
+                self.ws = ws;
+                self.sync_terminals();
+            }
+            HostMsg::State(state) => {
+                self.states.insert(state.terminal, state);
+            }
+            HostMsg::Replay { terminal, bytes } => {
+                if let Some(screen) = self.screens.get_mut(&terminal) {
+                    screen.reset();
+                    screen.feed(&bytes);
+                    screen.announce_size();
+                }
+            }
+            HostMsg::Output { terminal, bytes } => {
+                if let Some(screen) = self.screens.get_mut(&terminal) {
+                    screen.feed(&bytes);
+                }
+            }
+            HostMsg::Error(e) => self.banner = Some(e),
+        }
+    }
+
+    /// Attaches to every terminal in the workspace and drops screens for removed ones.
+    fn sync_terminals(&mut self) {
+        let ids: HashSet<Uuid> = self.ws.projects.iter().flat_map(|p| p.terminals.iter().map(|t| t.id)).collect();
+        self.screens.retain(|id, _| ids.contains(id));
+        self.states.retain(|id, _| ids.contains(id));
+        self.attached.retain(|id| ids.contains(id));
+        for id in ids {
+            if self.attached.insert(id) {
+                let sender = self.client.sender();
+                self.screens.entry(id).or_insert_with(|| Screen::new(id, sender));
+                self.send(ClientMsg::Attach(id));
+            }
+        }
+        if self.active_project().is_none() {
+            let first = self.ws.projects.iter().find(|p| p.open).map(|p| p.id);
+            if self.ui.active_project != first {
+                self.ui.active_project = first;
+                self.mark_dirty();
+            }
+        }
+    }
+
+    // ---------- per-frame housekeeping ----------
 
     fn track_window(&mut self, ctx: &egui::Context) {
         let (inner, outer, maximized) = ctx.input(|i| {
@@ -370,7 +375,7 @@ impl App {
             (v.inner_rect, v.outer_rect, v.maximized.unwrap_or(false))
         });
         let Some(inner) = inner else { return };
-        let mut state = self.ws.window.unwrap_or(WindowState {
+        let mut state = self.ui.window.unwrap_or(WindowState {
             width: inner.width(),
             height: inner.height(),
             x: None,
@@ -386,8 +391,8 @@ impl App {
                 state.y = Some(outer.min.y.round());
             }
         }
-        if self.ws.window != Some(state) {
-            self.ws.window = Some(state);
+        if self.ui.window != Some(state) {
+            self.ui.window = Some(state);
             self.mark_dirty();
         }
     }
@@ -407,15 +412,9 @@ impl App {
     fn save_now(&mut self) {
         self.dirty = false;
         self.last_save = Instant::now();
-        self.save_error = persist::save(&self.store_path, &self.ws).err().map(|e| e.to_string());
-    }
-
-    pub fn store_path(&self) -> &PathBuf {
-        &self.store_path
-    }
-
-    pub fn last_save(&self) -> Instant {
-        self.last_save
+        if let Err(e) = persist::save(&self.ui_path, &self.ui) {
+            self.banner = Some(format!("Could not save {}: {e}", self.ui_path.display()));
+        }
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -425,8 +424,8 @@ impl App {
         }
         let cs = Modifiers::CTRL | Modifiers::SHIFT;
         let hit = |m, k| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(m, k)));
-        let pid = self.ws.active_project;
-        let tid = self.active_project().and_then(Self::active_tab);
+        let pid = self.active_project().map(|p| p.id);
+        let tid = self.active_project().and_then(|p| self.active_tab(p));
         if hit(cs, Key::Tab) {
             self.push(Action::NextTab(-1));
         }
@@ -445,37 +444,28 @@ impl App {
                     self.push(Action::RemoveTerminal(pid, tid));
                 }
                 if hit(cs, Key::R) {
-                    self.push(Action::Start(pid, tid));
+                    self.push(Action::Start(tid));
                 }
             }
         }
     }
 }
 
+/// Short uptime text for a run that started at `started_at_ms` (Unix ms).
+pub fn uptime(started_at_ms: Option<i64>) -> Option<String> {
+    let secs = ((tm_core::time::now_ms() - started_at_ms?).max(0) / 1000) as u64;
+    Some(match secs {
+        0..60 => format!("{secs}s"),
+        60..3600 => format!("{}m {:02}s", secs / 60, secs % 60),
+        _ => format!("{}h {:02}m", secs / 3600, (secs / 60) % 60),
+    })
+}
+
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.pump_events();
+        self.pump_host();
         self.track_window(ctx);
-
-        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_quit {
-            let running = self.total_running();
-            if running > 0 {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                if self.dialog.is_none() {
-                    self.dialog = Some(Dialog::confirm(
-                        "Quit Terminal Manager?".into(),
-                        format!(
-                            "{running} terminal{} still running and will be stopped. Your workspace is saved, and auto-start terminals run again next time you open the app.",
-                            if running == 1 { " is" } else { "s are" }
-                        ),
-                        "Stop and quit",
-                        ConfirmAction::Quit,
-                    ));
-                }
-            }
-        }
-
-        if self.total_running() > 0 {
+        if self.states.values().any(|s| s.status.is_running()) {
             ctx.request_repaint_after(Duration::from_secs(1));
         }
         self.autosave(ctx);
@@ -494,9 +484,7 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        // Terminals keep running in the host; only the view state is saved here.
         self.save_now();
-        for s in self.sessions.values_mut() {
-            s.stop();
-        }
     }
 }

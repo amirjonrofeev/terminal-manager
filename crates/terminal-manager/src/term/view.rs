@@ -2,7 +2,7 @@
 
 use super::keys::key_bytes;
 use super::theme;
-use super::TerminalBackend;
+use super::Screen;
 use alacritty_terminal::selection::SelectionType;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::CursorShape;
@@ -11,7 +11,7 @@ use egui::{Align2, Color32, CornerRadius, Event, EventFilter, FontId, Id, Pos2, 
 const PADDING: f32 = 6.0;
 
 pub struct TerminalView<'a> {
-    backend: &'a mut TerminalBackend,
+    backend: &'a mut Screen,
     id: Id,
     font: FontId,
     request_focus: bool,
@@ -25,7 +25,7 @@ struct ViewState {
 }
 
 impl<'a> TerminalView<'a> {
-    pub fn new(backend: &'a mut TerminalBackend, id: Id) -> Self {
+    pub fn new(backend: &'a mut Screen, id: Id) -> Self {
         Self { backend, id, font: FontId::monospace(14.0), request_focus: false, interactive: true }
     }
 
@@ -192,7 +192,7 @@ impl<'a> TerminalView<'a> {
 
     fn paint(&self, ui: &Ui, rect: Rect, origin: Pos2, cw: f32, ch: f32, focused: bool) {
         let painter = ui.painter_at(rect);
-        let term = self.backend.term.lock();
+        let term = self.backend.term.borrow();
         let content = term.renderable_content();
         let colors = content.colors;
         let default_bg = theme::background(colors);

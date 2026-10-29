@@ -69,7 +69,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
 
 fn project_row(app: &mut App, ui: &mut Ui, id: uuid::Uuid) {
     let Some(project) = app.ws.project(id) else { return };
-    let selected = app.ws.active_project == Some(id) && project.open;
+    let selected = app.ui.active_project == Some(id) && project.open;
     let open = project.open;
     let running = app.running_count(project);
     let total = project.terminals.len();

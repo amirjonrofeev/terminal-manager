@@ -1,8 +1,8 @@
 //! Right side: tab bar, toolbar, terminal and status bar for the selected project.
 
 use super::{dot, ACCENT, BAD, BG, DIM, FG, IDLE, LINE, OK, SIDE, WARN};
-use crate::app::{Action, App};
-use crate::session::Status;
+use crate::app::{Action, App, Connection};
+use tm_core::protocol::Status;
 use crate::term::TerminalView;
 use egui::{Align, Align2, CentralPanel, CornerRadius, FontId, Frame, Id, Layout, Margin, Panel, RichText, ScrollArea, Sense, Stroke, Ui};
 use uuid::Uuid;
@@ -32,12 +32,25 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 });
         }
 
+        let connection = match &app.connection {
+            Connection::Connected(_) => None,
+            Connection::Connecting => Some("Connecting to the background host…".to_string()),
+            Connection::Disconnected(reason) => Some(format!("{reason} Retrying…")),
+        };
+        if let Some(msg) = connection {
+            Panel::top("connection")
+                .frame(Frame::new().fill(BAD.gamma_multiply(0.16)).inner_margin(Margin::symmetric(14, 8)))
+                .show(ui, |ui| {
+                    ui.label(RichText::new(msg).color(FG));
+                });
+        }
+
         let Some(project) = app.active_project() else {
             welcome(app, ui);
             return;
         };
         let pid = project.id;
-        let tid = App::active_tab(project);
+        let tid = app.active_tab(project);
 
         Panel::top("tabs").frame(Frame::new().fill(SIDE)).show(ui, |ui| tab_bar(app, ui, pid, tid));
         Panel::bottom("statusbar")
@@ -71,6 +84,10 @@ fn welcome(app: &mut App, ui: &mut Ui) {
         ui.add_space(ui.available_height() / 4.0);
         ui.label(RichText::new("Terminal Manager").size(26.0).color(FG));
         ui.add_space(6.0);
+        if !app.is_connected() {
+            ui.label(RichText::new("Waiting for the background host…").color(DIM));
+            return;
+        }
         ui.label(
             RichText::new("Add a project folder, give it the terminals you run there, and they come back after every restart.")
                 .color(DIM),
@@ -153,7 +170,7 @@ fn tab(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid, name: &str, status: &St
             ui.close();
         }
         if ui.button(if running { "↻ Restart" } else { "Start" }).clicked() {
-            app.push(Action::Start(pid, tid));
+            app.push(Action::Start(tid));
             ui.close();
         }
         if running && ui.button("Stop").clicked() {
@@ -176,11 +193,11 @@ fn toolbar(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid) {
     let Some(project) = app.ws.project(pid) else { return };
     let Some(spec) = project.terminal(tid) else { return };
     let status = app.status(tid);
-    let session = app.sessions.get(&tid);
-    let shell = crate::shell::resolve(&spec.shell, &project.default_shell).program;
+    let state = app.state(tid);
+    let shell = tm_core::shell::resolve(&spec.shell, &project.default_shell).program;
     let command = spec.command.trim().to_string();
-    let uptime = session.and_then(|s| s.uptime());
-    let title = session.and_then(|s| s.title.clone());
+    let uptime = crate::app::uptime(state.started_at_ms);
+    let title = state.title.clone();
 
     // Buttons are laid out first from the right, so the info on the left truncates instead of running under them.
     ui.horizontal(|ui| {
@@ -193,12 +210,12 @@ fn toolbar(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid) {
                     app.push(Action::Stop(tid));
                 }
                 if ui.button("↻ Restart").on_hover_text("Ctrl+Shift+R").clicked() {
-                    app.push(Action::Start(pid, tid));
+                    app.push(Action::Start(tid));
                 }
             } else {
                 let label = if status == Status::NotStarted { "Start" } else { "↻ Restart" };
                 if ui.button(label).clicked() {
-                    app.push(Action::Start(pid, tid));
+                    app.push(Action::Start(tid));
                 }
             }
             ui.add_space(12.0);
@@ -223,14 +240,15 @@ fn toolbar(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid) {
 }
 
 fn terminal_area(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid) {
-    let interactive = app.dialog.is_none();
+    let interactive = app.dialog.is_none() && app.is_connected();
     let focus = app.focus_terminal && interactive;
-    if let Some(backend) = app.sessions.get_mut(&tid).and_then(|s| s.backend.as_mut()) {
-        TerminalView::new(backend, Id::unique(("terminal", tid))).request_focus(focus).interactive(interactive).show(ui);
+    let status = app.status(tid);
+    let has_run = !matches!(status, Status::NotStarted | Status::Failed(_));
+    if has_run && let Some(screen) = app.screens.get_mut(&tid) {
+        TerminalView::new(screen, Id::unique(("terminal", tid))).request_focus(focus).interactive(interactive).show(ui);
         return;
     }
 
-    let status = app.status(tid);
     let Some(spec) = app.ws.project(pid).and_then(|p| p.terminal(tid)) else { return };
     let command = spec.command.trim().to_string();
     let auto = spec.auto_start;
@@ -253,7 +271,7 @@ fn terminal_area(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid) {
         }
         ui.add_space(10.0);
         if ui.button("Start").clicked() {
-            app.push(Action::Start(pid, tid));
+            app.push(Action::Start(tid));
         }
     });
 }
@@ -263,20 +281,23 @@ fn status_bar(app: &App, ui: &mut Ui, pid: Uuid) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(root).monospace().size(11.0).color(DIM));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let text = match &app.save_error {
-                Some(e) => RichText::new(format!("Save failed: {e}")).color(BAD),
-                None => RichText::new(format!("Saved · {}", short_ago(app.last_save().elapsed().as_secs()))).color(DIM),
+            let (text, hover) = match &app.connection {
+                Connection::Connected(info) => {
+                    let kind = match info.mode {
+                        tm_core::paths::HostMode::Service => "the service",
+                        tm_core::paths::HostMode::User => "the background host",
+                    };
+                    (
+                        RichText::new(format!("Running in {kind} · closing this window leaves them running")).color(DIM),
+                        format!("Host {} (pid {}), data in {}", info.version, info.pid, info.data_dir),
+                    )
+                }
+                _ => (RichText::new("Not connected").color(BAD), String::new()),
             };
-            ui.label(text.monospace().size(11.0)).on_hover_text(app.store_path().display().to_string());
+            let label = ui.label(text.monospace().size(11.0));
+            if !hover.is_empty() {
+                label.on_hover_text(hover);
+            }
         });
     });
-}
-
-fn short_ago(secs: u64) -> String {
-    match secs {
-        0..5 => "just now".into(),
-        5..60 => format!("{secs}s ago"),
-        60..3600 => format!("{}m ago", secs / 60),
-        _ => format!("{}h ago", secs / 3600),
-    }
 }

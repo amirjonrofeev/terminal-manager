@@ -1,6 +1,8 @@
 # Terminal Manager
 
-A small native app (Rust, egui, alacritty_terminal) for Windows and Linux that remembers your projects and the terminals you run in them. Close it or reboot, open it again, and every open project comes back with its auto-start commands running.
+A small native app (Rust, egui, alacritty_terminal) for Windows and Linux that runs and groups the terminals your projects need, aimed first at Windows servers where many long-running consoles get cluttered.
+
+Terminals run in a background **host** process, not in the window. Closing the window leaves them running; opening it again shows their output where it left off.
 
 ## Concepts
 
@@ -8,14 +10,24 @@ A small native app (Rust, egui, alacritty_terminal) for Windows and Linux that r
 - **Terminal**: a tab inside a project. It has a shell, an optional command that is typed into the shell when it starts (the shell stays open afterwards), a working dir relative to the project folder, its own env vars, and an auto-start flag.
 - Env merge order: system env, then project env, then terminal env (keys are case-insensitive on Windows).
 
+## How it runs
+
+- `terminal-manager` is the window. If no host is running, it starts one for the current user (`terminal-manager --host`) in the background.
+- The host owns the processes and the saved projects. It keeps the last 1 MB of each terminal's output and replays it when a window connects.
+- `tm-host` is the same host as a standalone binary with no GUI dependencies.
+- Windows service mode (terminals that survive logoff and start at boot) is coming next.
+
 ## Saved state
 
-`workspace.json` is saved in:
+| What | Where |
+| --- | --- |
+| Projects and terminals (host) | Windows `%LOCALAPPDATA%\terminal-manager\host\workspace.json`, Linux `~/.local/share/terminal-manager/workspace.json` |
+| Host log | `host.log` next to `workspace.json` |
+| Window size, selected project and tab (per user) | Windows `%APPDATA%\terminal-manager\ui.json`, Linux `~/.config/terminal-manager/ui.json` |
 
-- Windows: `%APPDATA%\terminal-manager\`
-- Linux: `~/.config/terminal-manager/`
+Files are written by writing a temp file and renaming it over the old one. A file that can't be parsed is kept as `.bak`. On first start the host imports the v0.1 `workspace.json` from the per-user config folder.
 
-It is written at most once a second and on quit, by writing a temp file and renaming it over the old one. If the file can't be parsed, it is kept as `workspace.json.bak` and the app starts with an empty workspace. Set `TERMINAL_MANAGER_WORKSPACE=<path>` to use a different file.
+For testing, `TERMINAL_MANAGER_DATA`, `TERMINAL_MANAGER_SOCKET` and `TERMINAL_MANAGER_CONFIG` point the host data, the pipe/socket name and the GUI config somewhere else.
 
 ## Shortcuts
 
@@ -32,8 +44,11 @@ It is written at most once a second and on quit, by writing a temp file and rena
 ## Build
 
 ```sh
-cargo build --release   # target/release/terminal-manager(.exe)
-cargo test
+cargo build --release --workspace   # target/release/terminal-manager(.exe) and tm-host(.exe)
+cargo test --workspace
+cargo run -p terminal-manager
 ```
+
+The workspace has three crates: `tm-core` (model, protocol, IPC), `tm-host` (process host) and `terminal-manager` (GUI).
 
 Linux needs the usual winit/wgpu dev packages (for example `libxkbcommon-dev libwayland-dev libx11-dev`).
