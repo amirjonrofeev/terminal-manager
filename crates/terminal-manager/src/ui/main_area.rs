@@ -71,7 +71,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         let pid = project.id;
         let tid = app.active_tab(project);
 
-        if app.dev_enabled() {
+        if app.dev_panel_shown() {
             let width = ui.available_width();
             let panel = match app.ui.dev_side {
                 crate::app::DevSide::Left => Panel::left("dev-left"),
@@ -85,18 +85,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 .show(ui, |ui| super::dev::panel(app, ui, pid));
         }
 
-        Panel::top("tabs").frame(Frame::new().fill(SIDE)).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.add_space(8.0);
-                    let on = app.dev_enabled();
-                    if ui.selectable_label(on, "Dev").on_hover_text("Show or hide the dev panel (Claude Code, shells)").clicked() {
-                        app.push(Action::SetDevEnabled(!on));
-                    }
-                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| tab_bar(app, ui, pid, tid));
-                });
-            });
-        });
+        Panel::top("tabs").frame(Frame::new().fill(SIDE)).show(ui, |ui| tab_bar(app, ui, pid, tid));
         Panel::bottom("statusbar")
             .frame(Frame::new().fill(SIDE).inner_margin(Margin::symmetric(14, 4)).stroke(Stroke::new(1.0, LINE)))
             .show(ui, |ui| status_bar(app, ui, pid));

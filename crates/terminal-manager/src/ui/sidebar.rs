@@ -165,20 +165,37 @@ fn project_row(app: &mut App, ui: &mut Ui, id: uuid::Uuid) {
 }
 
 fn footer(app: &mut App, ui: &mut Ui) {
-    let pid = app.active_project().map(|p| p.id);
-    ui.horizontal(|ui| {
-        if ui.button("«").on_hover_text("Collapse the sidebar (Ctrl+B)").clicked() {
-            app.push(Action::ToggleSidebar);
-        }
-        if let Some(pid) = pid {
-            if ui.button("Start all").on_hover_text("Start every terminal in this project").clicked() {
+    if let Some(pid) = app.active_project().map(|p| p.id) {
+        ui.horizontal(|ui| {
+            if ui.button("Start all").on_hover_text("Start every service terminal in this project").clicked() {
                 app.push(Action::StartAll(pid));
             }
             if ui.button("Stop all").clicked() {
                 app.push(Action::StopAll(pid));
             }
+        });
+        ui.add_space(4.0);
+    }
+    ui.horizontal(|ui| {
+        if ui.button("«").on_hover_text("Collapse the sidebar (Ctrl+B)").clicked() {
+            app.push(Action::ToggleSidebar);
+        }
+        dev_button(app, ui);
+        if ui.button("Settings").clicked() {
+            app.push(Action::OpenSettings);
         }
     });
+}
+
+/// Shows or hides the dev panel; absent when dev tools are off in Settings.
+fn dev_button(app: &mut App, ui: &mut Ui) {
+    if !app.dev_enabled() {
+        return;
+    }
+    let shown = app.dev_panel_shown();
+    if ui.selectable_label(shown, "Dev").on_hover_text("Show or hide the dev panel (Claude Code, shells)").clicked() {
+        app.push(Action::ToggleDevPanel);
+    }
 }
 
 /// The sidebar minimized to a strip: one button per project (initial + status), expand at the bottom.
@@ -192,6 +209,8 @@ fn collapsed(app: &mut App, ui: &mut Ui) {
                 .frame(Frame::new().fill(SIDE).inner_margin(Margin::symmetric(0, 10)))
                 .show(ui, |ui| {
                     ui.vertical_centered(|ui| {
+                        dev_button(app, ui);
+                        ui.add_space(4.0);
                         if ui.button("»").on_hover_text("Expand the sidebar (Ctrl+B)").clicked() {
                             app.push(Action::ToggleSidebar);
                         }

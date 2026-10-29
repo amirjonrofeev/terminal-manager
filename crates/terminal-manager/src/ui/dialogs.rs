@@ -18,6 +18,7 @@ pub enum Dialog {
     Project { draft: Project, is_new: bool },
     Terminal { project: Uuid, draft: TerminalSpec, is_new: bool },
     Confirm { title: String, message: String, confirm_label: &'static str, action: ConfirmAction },
+    Settings { dev_enabled: bool, dev_side: crate::app::DevSide },
 }
 
 impl Dialog {
@@ -50,9 +51,14 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         Dialog::Terminal { project, .. } => app.ws.project(*project).cloned(),
         _ => None,
     };
+    let host = match &app.connection {
+        crate::app::Connection::Connected(info) => Some(info.clone()),
+        _ => None,
+    };
     let modal = Modal::new(Id::unique("dialog")).show(ctx, |ui| {
         ui.set_width(460.0);
         match &mut dialog {
+            Dialog::Settings { dev_enabled, dev_side } => settings(ui, dev_enabled, dev_side, host.as_ref()),
             Dialog::Project { draft, is_new } => project_editor(ui, draft, *is_new),
             Dialog::Terminal { draft, is_new, .. } => {
                 terminal_editor(ui, draft, *is_new, running_in_project, terminal_project.as_ref())
@@ -257,4 +263,62 @@ fn env_editor(ui: &mut Ui, id: &str, vars: &mut Vec<EnvVar>) {
     if let Some(i) = remove {
         vars.remove(i);
     }
+}
+
+fn settings(
+    ui: &mut Ui,
+    dev_enabled: &mut bool,
+    dev_side: &mut crate::app::DevSide,
+    host: Option<&tm_core::protocol::HostInfo>,
+) -> Outcome {
+    use crate::app::DevSide;
+    heading(ui, "Settings");
+
+    ui.label(RichText::new("Dev tools").strong().color(FG));
+    ui.checkbox(dev_enabled, "Enable dev tools (dev panel with Claude Code, shells and VS Code)");
+    ui.label(
+        RichText::new(
+            "Dev terminals run as you in a background host of your own. Turn this off where you only run services, \
+             such as servers: no dev panel, no Dev button, and no host is started for you. Dev terminals that are \
+             already running keep running until you stop them.",
+        )
+        .size(12.0)
+        .color(DIM),
+    );
+    ui.add_enabled_ui(*dev_enabled, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Dev panel side").color(DIM));
+            ui.radio_value(dev_side, DevSide::Left, "Left");
+            ui.radio_value(dev_side, DevSide::Right, "Right");
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label(RichText::new("Host").strong().color(FG));
+    match host {
+        Some(info) => {
+            let kind = match info.mode {
+                tm_core::paths::HostMode::Service => "Windows service",
+                tm_core::paths::HostMode::User => "Background host (your account)",
+            };
+            ui.label(RichText::new(format!("{kind} · version {} · pid {}", info.version, info.pid)).color(DIM));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&info.data_dir).monospace().size(12.0).color(DIM));
+                if ui.small_button("Open folder").on_hover_text("Projects, logs and settings.json").clicked() {
+                    let _ = std::process::Command::new(if cfg!(windows) { "explorer" } else { "xdg-open" })
+                        .arg(&info.data_dir)
+                        .spawn();
+                }
+            });
+            ui.label(
+                RichText::new("Log retention, file size and error/warning patterns are in settings.json in that folder; the host reads it when it starts.")
+                    .size(12.0)
+                    .color(DIM),
+            );
+        }
+        None => {
+            ui.label(RichText::new("Not connected.").color(DIM));
+        }
+    }
+    buttons(ui, "Save", true)
 }

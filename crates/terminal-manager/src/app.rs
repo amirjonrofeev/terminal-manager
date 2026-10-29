@@ -42,8 +42,11 @@ pub struct UiState {
     pub active_project: Option<Uuid>,
     pub active_tab: HashMap<Uuid, Uuid>,
     pub window: Option<WindowState>,
-    /// Dev panel on/off; `None` = on, except when connected to the Windows service.
+    /// Dev tools (dev panel, Claude Code, per-user host) on/off, set in Settings.
+    /// `None` = on, except when connected to the Windows service.
     pub dev_enabled: Option<bool>,
+    /// The dev panel is hidden with the Dev button (dev tools stay on).
+    pub dev_panel_hidden: bool,
     pub dev_side: DevSide,
     /// Selected dev terminal per project.
     pub dev_tab: HashMap<Uuid, Uuid>,
@@ -109,6 +112,9 @@ pub enum Action {
     SetDevEnabled(bool),
     SetDevSide(DevSide),
     ToggleSidebar,
+    /// Show or hide the dev panel (dev tools stay on).
+    ToggleDevPanel,
+    OpenSettings,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -204,14 +210,19 @@ impl App {
         matches!(self.connection, Connection::Connected(_))
     }
 
-    /// Whether the dev panel is on. Off by default when connected to the Windows service, so
-    /// servers don't start a per-user host unless someone turns it on.
+    /// Whether dev tools are on at all (Settings). Off by default when connected to the Windows
+    /// service, so servers don't start a per-user host unless someone turns them on.
     pub fn dev_enabled(&self) -> bool {
         match (self.ui.dev_enabled, &self.connection) {
             (Some(on), _) => on,
             (None, Connection::Connected(info)) => info.mode != tm_core::paths::HostMode::Service,
             _ => false,
         }
+    }
+
+    /// Whether the dev panel is on screen.
+    pub fn dev_panel_shown(&self) -> bool {
+        self.dev_enabled() && !self.ui.dev_panel_hidden
     }
 
     pub fn dev_connected(&self) -> bool {
@@ -534,8 +545,18 @@ impl App {
             }
             Action::SetDevEnabled(on) => {
                 self.ui.dev_enabled = Some(on);
+                if on {
+                    self.ui.dev_panel_hidden = false;
+                }
                 self.mark_dirty();
                 self.sync_dev_client();
+            }
+            Action::ToggleDevPanel => {
+                self.ui.dev_panel_hidden = !self.ui.dev_panel_hidden;
+                self.mark_dirty();
+            }
+            Action::OpenSettings => {
+                self.dialog = Some(Dialog::Settings { dev_enabled: self.dev_enabled(), dev_side: self.ui.dev_side });
             }
             Action::SetDevSide(side) => {
                 self.ui.dev_side = side;
@@ -648,6 +669,13 @@ impl App {
                     self.send(ClientMsg::Start(id));
                     self.select_tab(project, id);
                 }
+            }
+            Dialog::Settings { dev_enabled, dev_side } => {
+                if dev_enabled != self.dev_enabled() {
+                    self.apply(Action::SetDevEnabled(dev_enabled));
+                }
+                self.ui.dev_side = dev_side;
+                self.mark_dirty();
             }
             Dialog::Confirm { action, .. } => match action {
                 ConfirmAction::RemoveProject(id) => {

@@ -88,7 +88,7 @@ fn header(app: &mut App, ui: &mut Ui, pid: Uuid, terms: &[TerminalSpec], active:
             ui.spacing_mut().item_spacing.x = 6.0;
             ui.add_space(6.0);
             if ui.small_button("✕").on_hover_text("Hide the dev panel (dev terminals keep running)").clicked() {
-                app.push(Action::SetDevEnabled(false));
+                app.push(Action::ToggleDevPanel);
             }
             let (other, label) = match app.ui.dev_side {
                 DevSide::Left => (DevSide::Right, "Move to the right"),
