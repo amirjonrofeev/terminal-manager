@@ -35,6 +35,15 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     }
                 });
             });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add_space(10.0);
+                let search = egui::Button::new(RichText::new("Search logs…").color(DIM))
+                    .min_size(egui::vec2(ui.available_width() - 10.0, 24.0));
+                if ui.add(search).on_hover_text("Search every terminal's saved output (Ctrl+Shift+F)").clicked() {
+                    app.push(Action::OpenSearch);
+                }
+            });
             ui.add_space(6.0);
 
             ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {

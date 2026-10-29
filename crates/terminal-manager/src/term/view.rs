@@ -192,6 +192,7 @@ impl<'a> TerminalView<'a> {
 
     fn paint(&self, ui: &Ui, rect: Rect, origin: Pos2, cw: f32, ch: f32, focused: bool) {
         let painter = ui.painter_at(rect);
+        let finds = self.backend.find_visible();
         let term = self.backend.term.borrow();
         let content = term.renderable_content();
         let colors = content.colors;
@@ -229,6 +230,12 @@ impl<'a> TerminalView<'a> {
             }
             if selection.is_some_and(|s| s.contains(indexed.point)) {
                 bg = theme::SELECTION;
+            }
+            if let Some((_, current)) = finds.iter().find(|(m, _)| m.contains(&indexed.point)) {
+                bg = if *current { theme::FIND_CURRENT } else { theme::FIND };
+                if *current {
+                    fg = default_bg;
+                }
             }
             if flags.contains(Flags::HIDDEN) {
                 fg = bg;

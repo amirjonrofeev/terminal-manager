@@ -68,7 +68,11 @@ fn handle_client(host: &Arc<Host>, stream: Stream) -> io::Result<()> {
 
     let result = loop {
         match ipc::read_frame::<_, ClientMsg>(&mut reader) {
-            Ok(msg) => host.handle(&client, msg),
+            Ok(msg) => {
+                if let Some(msg) = host.handle_logs(&client, msg) {
+                    host.handle(&client, msg);
+                }
+            }
             Err(e) => break e,
         }
     };

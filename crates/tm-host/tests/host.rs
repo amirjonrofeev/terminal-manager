@@ -149,3 +149,36 @@ fn summary(m: &HostMsg) -> String {
         other => format!("{other:?}"),
     }
 }
+
+/// Diagnostic: dump what ConPTY sends for a line longer than the terminal is wide.
+#[test]
+#[ignore]
+fn dump_long_line_bytes() {
+    let dir = std::env::temp_dir().join(format!("tm-wrap-{}", uuid::Uuid::new_v4()));
+    let socket = if cfg!(windows) { format!("tm-wrap-{}", uuid::Uuid::new_v4()) } else { dir.join("s.sock").display().to_string() };
+    unsafe {
+        std::env::set_var(ENV_DATA_DIR, &dir);
+        std::env::set_var(ENV_SOCKET, &socket);
+    }
+    std::thread::spawn(|| tm_host::run(HostMode::User, false).unwrap());
+    let a = Conn::open(&socket);
+    let long: String = (0..30).map(|i| format!("seg{i:02}-abc")).collect(); // 300 chars
+    let spec = TerminalSpec { name: "w".into(), shell: ShellKind::Cmd, command: format!("echo {long} & exit 0"), ..Default::default() };
+    let tid = spec.id;
+    a.send(ClientMsg::UpsertProject(Project { name: "p".into(), root: dir.clone(), terminals: vec![spec], ..Default::default() }));
+    a.send(ClientMsg::Resize { terminal: tid, cols: 80, lines: 24 });
+    a.send(ClientMsg::Attach(tid));
+    let mut bytes = Vec::new();
+    a.wait_for("exit", |m| {
+        match m {
+            HostMsg::Output { bytes: b, .. } | HostMsg::Replay { bytes: b, .. } => bytes.extend_from_slice(b),
+            HostMsg::State(s) if matches!(s.status, Status::Exited(_)) => return true,
+            _ => {}
+        }
+        false
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    println!("RAW: {:?}", String::from_utf8_lossy(&bytes));
+    let log: String = std::fs::read_dir(dir.join("logs").join(tid.to_string())).unwrap().flatten().map(|e| std::fs::read_to_string(e.path()).unwrap()).collect();
+    println!("LOG:\n{log}");
+}

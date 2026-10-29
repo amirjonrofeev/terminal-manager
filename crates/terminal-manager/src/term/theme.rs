@@ -6,6 +6,8 @@ use egui::Color32;
 use tm_core::palette;
 
 pub const SELECTION: Color32 = Color32::from_rgb(0x2f, 0x4a, 0x5c);
+pub const FIND: Color32 = Color32::from_rgb(0x5a, 0x4a, 0x1e);
+pub const FIND_CURRENT: Color32 = Color32::from_rgb(0xe0, 0xa8, 0x3a);
 
 fn rgb_for_index(index: usize) -> Rgb {
     let (r, g, b) = palette::rgb_for_index(index);

@@ -11,7 +11,9 @@ mod view;
 pub use view::TerminalView;
 
 use alacritty_terminal::event::VoidListener;
-use alacritty_terminal::grid::Scroll;
+use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::index::Direction;
+use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::test::TermSize;
@@ -19,6 +21,7 @@ use alacritty_terminal::term::{self, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 use std::cell::RefCell;
 use std::sync::mpsc::Sender;
+use std::time::{Duration, Instant};
 use tm_core::protocol::ClientMsg;
 use uuid::Uuid;
 
@@ -39,17 +42,122 @@ pub struct Screen {
     parser: Processor,
     size: GridSize,
     out: Sender<ClientMsg>,
+    pub find: Find,
+}
+
+/// Find-in-terminal state (Ctrl+F) over the screen and its scrollback.
+#[derive(Default)]
+pub struct Find {
+    query: String,
+    case_sensitive: bool,
+    matches: Vec<Match>,
+    /// Index into `matches` of the selected match.
+    pub current: Option<usize>,
+    /// New output arrived since the matches were computed.
+    stale: bool,
+    computed_at: Option<Instant>,
+}
+
+impl Find {
+    pub fn count(&self) -> usize {
+        self.matches.len()
+    }
 }
 
 impl Screen {
     pub fn new(id: Uuid, out: Sender<ClientMsg>) -> Self {
         let size = GridSize { cols: 120, lines: 30, cell_w: 8.0, cell_h: 16.0 };
-        Self { id, term: RefCell::new(new_term(size)), parser: Processor::new(), size, out }
+        Self { id, term: RefCell::new(new_term(size)), parser: Processor::new(), size, out, find: Find::default() }
     }
 
     /// Feeds output from the host.
     pub fn feed(&mut self, bytes: &[u8]) {
         self.parser.advance(&mut *self.term.borrow_mut(), bytes);
+        self.find.stale = !self.find.query.is_empty();
+    }
+
+    /// Sets the text to find; selects the newest match and scrolls to it.
+    pub fn find_set(&mut self, query: &str, case_sensitive: bool) {
+        if query == self.find.query && case_sensitive == self.find.case_sensitive {
+            return;
+        }
+        self.find.query = query.to_string();
+        self.find.case_sensitive = case_sensitive;
+        self.find_compute();
+        self.find.current = self.find.matches.len().checked_sub(1);
+        self.find_reveal();
+    }
+
+    pub fn find_clear(&mut self) {
+        self.find = Find::default();
+    }
+
+    /// Moves to the next (towards newer output) or previous match.
+    pub fn find_step(&mut self, forward: bool) {
+        self.find_refresh(true);
+        let n = self.find.matches.len();
+        if n == 0 {
+            return;
+        }
+        self.find.current = Some(match self.find.current {
+            Some(i) if forward => (i + 1) % n,
+            Some(i) => (i + n - 1) % n,
+            None => n - 1,
+        });
+        self.find_reveal();
+    }
+
+    /// Recomputes matches after new output, at most a few times a second.
+    pub fn find_refresh(&mut self, now: bool) {
+        let due = self.find.computed_at.is_none_or(|t| t.elapsed() > Duration::from_millis(300));
+        if self.find.stale && (now || due) {
+            let selected = self.find.current.and_then(|i| self.find.matches.get(i)).map(|m| *m.start());
+            self.find_compute();
+            // Keep the same match selected if it is still there (lines shift as output scrolls).
+            self.find.current = selected
+                .and_then(|p| self.find.matches.iter().position(|m| *m.start() == p))
+                .or(self.find.matches.len().checked_sub(1));
+        }
+    }
+
+    fn find_compute(&mut self) {
+        self.find.stale = false;
+        self.find.computed_at = Some(Instant::now());
+        self.find.matches.clear();
+        if self.find.query.is_empty() {
+            return;
+        }
+        let flags = if self.find.case_sensitive { "(?-i)" } else { "(?i)" };
+        let Ok(mut regex) = RegexSearch::new(&format!("{flags}{}", regex_escape(&self.find.query))) else { return };
+        let term = self.term.borrow();
+        let start = Point::new(term.grid().topmost_line(), Column(0));
+        let end = Point::new(term.grid().bottommost_line(), term.grid().last_column());
+        self.find.matches = RegexIter::new(start, end, Direction::Right, &term, &mut regex).take(10_000).collect();
+    }
+
+    fn find_reveal(&mut self) {
+        if let Some(m) = self.find.current.and_then(|i| self.find.matches.get(i)) {
+            let point = *m.start();
+            self.term.borrow_mut().scroll_to_point(point);
+        }
+    }
+
+    /// Matches in the current viewport, with whether each is the selected one.
+    pub(crate) fn find_visible(&self) -> Vec<(Match, bool)> {
+        if self.find.matches.is_empty() {
+            return Vec::new();
+        }
+        let term = self.term.borrow();
+        let offset = term.grid().display_offset() as i32;
+        let top = Line(-offset);
+        let bottom = Line(-offset + term.screen_lines() as i32 - 1);
+        self.find
+            .matches
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.end().line >= top && m.start().line <= bottom)
+            .map(|(i, m)| (m.clone(), Some(i) == self.find.current))
+            .collect()
     }
 
     /// Clears everything before a replay.
@@ -155,4 +263,56 @@ impl Screen {
 fn new_term(size: GridSize) -> Term<VoidListener> {
     let config = term::Config { scrolling_history: SCROLLBACK, ..Default::default() };
     Term::new(config, &TermSize::new(size.cols, size.lines), VoidListener)
+}
+
+/// Escapes regex metacharacters so find matches the text literally.
+fn regex_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if r"\.+*?()|[]{}^$#&-~".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn screen() -> Screen {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        Screen::new(Uuid::new_v4(), tx)
+    }
+
+    #[test]
+    fn find_counts_steps_and_follows_new_output() {
+        let mut s = screen();
+        for i in 0..200 {
+            s.feed(format!("line {i} {}\r\n", if i % 50 == 0 { "ERROR timeout" } else { "ok" }).as_bytes());
+        }
+        s.find_set("error", false);
+        assert_eq!(s.find.count(), 4);
+        assert_eq!(s.find.current, Some(3), "starts at the newest match");
+        s.find_step(false);
+        assert_eq!(s.find.current, Some(2));
+        s.find_step(true);
+        s.find_step(true);
+        assert_eq!(s.find.current, Some(0), "wraps around");
+
+        s.find_set("error", true);
+        assert_eq!(s.find.count(), 0, "case-sensitive");
+        s.find_set("ERROR", true);
+        assert_eq!(s.find.count(), 4);
+
+        // Regex metacharacters are literal; new output is picked up.
+        s.find_set("(x)", false);
+        assert_eq!(s.find.count(), 0);
+        s.feed(b"call (x) failed\r\n");
+        s.find_refresh(true);
+        assert_eq!(s.find.count(), 1);
+        s.find_clear();
+        assert!(s.find_visible().is_empty());
+    }
 }

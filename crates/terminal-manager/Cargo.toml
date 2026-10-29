@@ -9,9 +9,13 @@ license.workspace = true
 tm-core.workspace = true
 tm-host.workspace = true
 alacritty_terminal.workspace = true
+chrono.workspace = true
+regex = "1"
+jiff = "0.2"
 eframe.workspace = true
 egui.workspace = true
 rfd.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+egui_extras = { version = "0.37", features = ["datepicker"] }

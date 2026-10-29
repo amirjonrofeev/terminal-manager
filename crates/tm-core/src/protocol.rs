@@ -1,12 +1,14 @@
 //! Messages between the GUI (client) and the host.
 
+use crate::logs::Level;
+use crate::logs::search::{SearchOutcome, SearchQuery, Window};
 use crate::model::{Project, TerminalSpec, Workspace};
 use crate::paths::HostMode;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Bump on any change to these types; mismatched peers refuse to talk.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum Status {
@@ -87,6 +89,11 @@ pub enum ClientMsg {
     Resize { terminal: Uuid, cols: u16, lines: u16 },
     /// The user has seen this terminal: reset its unseen error/warning counts.
     MarkSeen(Uuid),
+    /// Searches the logs. A newer search from the same client cancels an older one.
+    Search { req: u64, query: SearchQuery },
+    CancelSearch,
+    /// A page of one terminal's log around a time (or the newest lines).
+    ReadLog { req: u64, terminal: Uuid, around_ms: Option<i64>, before: u32, after: u32, levels: Vec<Level> },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -100,4 +107,7 @@ pub enum HostMsg {
     Output { terminal: Uuid, bytes: Vec<u8> },
     /// A request could not be carried out.
     Error(String),
+    SearchDone { req: u64, outcome: SearchOutcome, elapsed_ms: u64 },
+    SearchFailed { req: u64, error: String },
+    LogPage { req: u64, terminal: Uuid, window: Window },
 }

@@ -2,6 +2,7 @@
 
 pub mod level;
 pub mod line;
+pub mod search;
 pub mod writer;
 
 pub use level::{Classifier, Level};
@@ -21,10 +22,23 @@ pub struct LogSettings {
     pub retention_days: u32,
     /// A day's file continues in a new part past this size.
     pub max_file_mb: u32,
-    /// Regex (case-insensitive by default) marking a line as an error.
+    /// Regex marking a line as an error. Empty means the built-in pattern (see `level.rs`).
     pub error_pattern: String,
-    /// Regex marking a line as a warning.
+    /// Regex marking a line as a warning. Empty means the built-in pattern.
     pub warning_pattern: String,
+}
+
+impl LogSettings {
+    /// The error and warning patterns in effect.
+    pub fn patterns(&self) -> (&str, &str) {
+        fn pick<'a>(p: &'a str, default: &'static str) -> &'a str {
+            if p.trim().is_empty() { default } else { p }
+        }
+        (
+            pick(&self.error_pattern, level::DEFAULT_ERROR_PATTERN),
+            pick(&self.warning_pattern, level::DEFAULT_WARNING_PATTERN),
+        )
+    }
 }
 
 impl Default for LogSettings {
@@ -32,8 +46,8 @@ impl Default for LogSettings {
         Self {
             retention_days: 30,
             max_file_mb: 200,
-            error_pattern: level::DEFAULT_ERROR_PATTERN.into(),
-            warning_pattern: level::DEFAULT_WARNING_PATTERN.into(),
+            error_pattern: String::new(),
+            warning_pattern: String::new(),
         }
     }
 }

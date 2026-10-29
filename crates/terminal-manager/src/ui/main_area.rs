@@ -59,6 +59,11 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 });
         }
 
+        if app.search_open {
+            super::logs::global_search(app, ui);
+            return;
+        }
+
         let Some(project) = app.active_project() else {
             welcome(app, ui);
             return;
@@ -123,12 +128,13 @@ fn tab_bar(app: &mut App, ui: &mut Ui, pid: Uuid, active: Option<Uuid>) {
             (t.id, t.name.clone(), st.status, (st.unseen_errors, st.unseen_warnings))
         })
         .collect();
+    let kinds: Vec<super::kind::Kind> = tabs.iter().map(|(tid, ..)| app.kind_of(pid, *tid)).collect();
 
     ScrollArea::horizontal().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            for (tid, name, status, unseen) in tabs {
-                tab(app, ui, pid, tid, &name, &status, unseen, active == Some(tid));
+            for ((tid, name, status, unseen), kind) in tabs.into_iter().zip(kinds) {
+                tab(app, ui, pid, tid, &name, &status, unseen, kind, active == Some(tid));
             }
             ui.add_space(4.0);
             let plus = ui.add(egui::Button::new(RichText::new("+").size(16.0).color(DIM)).frame(false).min_size(egui::vec2(36.0, 36.0)));
@@ -140,7 +146,17 @@ fn tab_bar(app: &mut App, ui: &mut Ui, pid: Uuid, active: Option<Uuid>) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn tab(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid, name: &str, status: &Status, unseen: (u32, u32), selected: bool) {
+fn tab(
+    app: &mut App,
+    ui: &mut Ui,
+    pid: Uuid,
+    tid: Uuid,
+    name: &str,
+    status: &Status,
+    unseen: (u32, u32),
+    kind: super::kind::Kind,
+    selected: bool,
+) {
     let font = FontId::proportional(13.0);
     let code = match status {
         Status::Exited(Some(c)) if *c != 0 => Some(c.to_string()),
@@ -156,7 +172,9 @@ fn tab(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid, name: &str, status: &St
         _ => None,
     };
     let badge_w = badge.as_ref().map_or(0.0, |(t, _)| pill_width(t) + 8.0);
-    let width = 14.0 + 10.0 + 8.0 + text_w + code_w + badge_w + 14.0;
+    // Layout: status dot, project-type badge, name, exit code, unseen badge.
+    const TEXT_X: f32 = 50.0;
+    let width = TEXT_X + text_w + code_w + badge_w + 14.0;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 36.0), Sense::click());
     let painter = ui.painter_at(rect);
 
@@ -167,9 +185,10 @@ fn tab(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid, name: &str, status: &St
         painter.rect_filled(rect, CornerRadius::ZERO, BG.gamma_multiply(0.5));
     }
     painter.line_segment([rect.right_top(), rect.right_bottom()], Stroke::new(1.0, LINE));
-    dot(&painter, egui::pos2(rect.min.x + 18.0, rect.center().y), status_color(status));
+    dot(&painter, egui::pos2(rect.min.x + 16.0, rect.center().y), status_color(status));
+    kind.paint(&painter, egui::pos2(rect.min.x + 34.0, rect.center().y));
     painter.text(
-        egui::pos2(rect.min.x + 30.0, rect.center().y),
+        egui::pos2(rect.min.x + TEXT_X, rect.center().y),
         Align2::LEFT_CENTER,
         name,
         font,
@@ -177,7 +196,7 @@ fn tab(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid, name: &str, status: &St
     );
     if let Some(code) = code {
         painter.text(
-            egui::pos2(rect.min.x + 30.0 + text_w + 8.0, rect.center().y),
+            egui::pos2(rect.min.x + TEXT_X + text_w + 8.0, rect.center().y),
             Align2::LEFT_CENTER,
             code,
             FontId::monospace(11.0),
@@ -185,10 +204,11 @@ fn tab(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid, name: &str, status: &St
         );
     }
     if let Some((text, color)) = &badge {
-        let x = rect.min.x + 30.0 + text_w + code_w + 8.0;
+        let x = rect.min.x + TEXT_X + text_w + code_w + 8.0;
         pill(&painter, egui::pos2(x, rect.center().y), text, *color);
     }
 
+    let resp = resp.on_hover_text(kind.label());
     if resp.clicked() {
         app.push(Action::SelectTab(pid, tid));
     }
@@ -251,6 +271,18 @@ fn toolbar(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid) {
                 }
             }
             ui.add_space(12.0);
+            // Live screen or saved logs.
+            let logs = app.log_mode.contains(&tid);
+            if ui.selectable_label(logs, "Logs").on_hover_text("Saved output with timestamps; search and filter").clicked() && !logs {
+                app.push(Action::ShowLogs(tid, true));
+            }
+            if ui.selectable_label(!logs, "Live").clicked() && logs {
+                app.push(Action::ShowLogs(tid, false));
+            }
+            if !logs && ui.button("Find").on_hover_text("Find in this terminal's output (Ctrl+F)").clicked() {
+                app.push(Action::OpenFind(tid));
+            }
+            ui.add_space(12.0);
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 16.0), Sense::hover());
                 dot(ui.painter(), r.center(), status_color(&status));
@@ -272,6 +304,10 @@ fn toolbar(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid) {
 }
 
 fn terminal_area(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid) {
+    if app.log_mode.contains(&tid) {
+        super::logs::terminal_logs(app, ui, tid);
+        return;
+    }
     let interactive = app.dialog.is_none() && app.is_connected();
     let focus = app.focus_terminal && interactive;
     if interactive && ui.ctx().input(|i| i.focused) {
@@ -279,6 +315,10 @@ fn terminal_area(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid) {
     }
     let status = app.status(tid);
     let has_run = !matches!(status, Status::NotStarted | Status::Failed(_));
+    if has_run && app.find.as_ref().is_some_and(|f| f.terminal == tid) {
+        find_bar(app, ui, tid);
+    }
+    let focus = focus && app.find.as_ref().is_none_or(|f| f.terminal != tid);
     if has_run && let Some(screen) = app.screens.get_mut(&tid) {
         TerminalView::new(screen, Id::unique(("terminal", tid))).request_focus(focus).interactive(interactive).show(ui);
         return;
@@ -339,4 +379,69 @@ fn status_bar(app: &App, ui: &mut Ui, pid: Uuid) {
 
 fn badge_text(n: u32) -> String {
     if n > 999 { "999+".into() } else { n.to_string() }
+}
+
+/// Ctrl+F bar over the live terminal: Enter = next (newer), Shift+Enter = previous, Esc = close.
+fn find_bar(app: &mut App, ui: &mut Ui, tid: Uuid) {
+    let (Some(bar), Some(screen)) = (app.find.as_mut(), app.screens.get_mut(&tid)) else { return };
+    let mut close = false;
+    let mut step: Option<bool> = None;
+    Panel::top("find-bar")
+        .frame(Frame::new().fill(SIDE).inner_margin(Margin::symmetric(12, 6)).stroke(Stroke::new(1.0, LINE)))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut bar.query)
+                        .id(Id::unique(("find-text", tid)))
+                        .hint_text("Find in output")
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(260.0),
+                );
+                if bar.focus {
+                    edit.request_focus();
+                    bar.focus = false;
+                }
+                let (enter, shift, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.modifiers.shift, i.key_pressed(egui::Key::Escape)));
+                if edit.lost_focus() && enter {
+                    step = Some(!shift);
+                    edit.request_focus();
+                }
+                if esc && (edit.has_focus() || edit.lost_focus()) {
+                    close = true;
+                }
+                if ui.selectable_label(bar.case_sensitive, "Aa").on_hover_text("Match case").clicked() {
+                    bar.case_sensitive = !bar.case_sensitive;
+                }
+                screen.find_set(&bar.query, bar.case_sensitive);
+                screen.find_refresh(false);
+                let n = screen.find.count();
+                let label = match (n, screen.find.current) {
+                    (_, _) if bar.query.is_empty() => String::new(),
+                    (0, _) => "No matches".into(),
+                    (n, Some(i)) => format!("{} of {n}", i + 1),
+                    (n, None) => format!("{n} matches"),
+                };
+                ui.label(RichText::new(label).size(12.0).color(if n == 0 && !bar.query.is_empty() { BAD } else { DIM }));
+                if ui.button("↑").on_hover_text("Previous (Shift+Enter)").clicked() {
+                    step = Some(false);
+                }
+                if ui.button("↓").on_hover_text("Next (Enter)").clicked() {
+                    step = Some(true);
+                }
+                ui.label(RichText::new("Scrollback only covers recent output; use Logs for older lines.").size(11.0).color(DIM));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button("Close").on_hover_text("Esc").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        });
+    if let Some(forward) = step {
+        screen.find_step(forward);
+    }
+    if close {
+        screen.find_clear();
+        app.find = None;
+        app.focus_terminal = true;
+    }
 }

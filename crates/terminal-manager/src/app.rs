@@ -5,6 +5,8 @@ use crate::client::{ClientEvent, HostClient};
 use crate::term::Screen;
 use crate::ui;
 use crate::ui::dialogs::{ConfirmAction, Dialog};
+use crate::ui::logs::{GlobalSearch, Row, TermLogs};
+use tm_core::logs::search::Entry;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -60,6 +62,17 @@ pub enum Action {
     Stop(Uuid),
     NextTab(i32),
     DismissBanner,
+    /// Switch a terminal between its live screen and its saved logs.
+    ShowLogs(Uuid, bool),
+    LoadTermLogs(Uuid),
+    TermLogsSearch,
+    OpenSearch,
+    CloseSearch,
+    GlobalSearch,
+    /// Show a log line in its terminal's Logs view, with the lines around it.
+    OpenLogLine(Uuid, Entry),
+    /// Open (or focus) the find bar over a terminal's live screen.
+    OpenFind(Uuid),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -87,6 +100,23 @@ pub struct App {
     pub dialog: Option<Dialog>,
     pub focus_terminal: bool,
     actions: Vec<Action>,
+    /// Terminals currently showing their Logs view instead of the live screen.
+    pub log_mode: HashSet<Uuid>,
+    pub term_logs: Option<TermLogs>,
+    pub search: GlobalSearch,
+    pub search_open: bool,
+    next_req: u64,
+    /// Find bar (Ctrl+F) over a terminal's live screen.
+    pub find: Option<FindBar>,
+    /// Detected project type per terminal, with the command/folder it was detected from.
+    kinds: HashMap<Uuid, (String, crate::ui::kind::Kind)>,
+}
+
+pub struct FindBar {
+    pub terminal: Uuid,
+    pub query: String,
+    pub case_sensitive: bool,
+    pub focus: bool,
 }
 
 impl App {
@@ -108,6 +138,13 @@ impl App {
             dialog: None,
             focus_terminal: true,
             actions: Vec::new(),
+            log_mode: HashSet::new(),
+            term_logs: None,
+            search: GlobalSearch::default(),
+            search_open: false,
+            next_req: 1,
+            find: None,
+            kinds: HashMap::new(),
         }
     }
 
@@ -156,6 +193,23 @@ impl App {
             (0, _) => Rollup::Idle,
             _ => Rollup::Warn,
         }
+    }
+
+    /// The project type shown on a terminal's tab (detection is cached until its command or folder changes).
+    pub fn kind_of(&mut self, pid: Uuid, tid: Uuid) -> crate::ui::kind::Kind {
+        use crate::ui::kind::Kind;
+        let Some((project, spec)) = self.ws.project(pid).and_then(|p| p.terminal(tid).map(|t| (p, t))) else {
+            return Kind::Shell;
+        };
+        let key = Kind::cache_key(project, spec);
+        if let Some((k, kind)) = self.kinds.get(&tid)
+            && *k == key
+        {
+            return *kind;
+        }
+        let kind = Kind::detect(project, spec);
+        self.kinds.insert(tid, (key, kind));
+        kind
     }
 
     /// Unseen errors and warnings across a project's terminals.
@@ -290,7 +344,99 @@ impl App {
                 }
             }
             Action::DismissBanner => self.banner = None,
+            Action::ShowLogs(tid, on) => {
+                if on {
+                    self.log_mode.insert(tid);
+                } else {
+                    self.log_mode.remove(&tid);
+                    self.focus_terminal = true;
+                }
+            }
+            Action::LoadTermLogs(tid) => {
+                self.term_logs = Some(TermLogs::new(tid));
+                self.run_term_search();
+            }
+            Action::TermLogsSearch => self.run_term_search(),
+            Action::OpenSearch => self.search_open = true,
+            Action::CloseSearch => {
+                if self.search.results.busy {
+                    self.send(ClientMsg::CancelSearch);
+                    self.search.results.busy = false;
+                }
+                self.search_open = false;
+                self.focus_terminal = true;
+            }
+            Action::GlobalSearch => self.run_global_search(),
+            Action::OpenLogLine(tid, entry) => self.open_log_line(tid, entry),
+            Action::OpenFind(tid) => match self.find.as_mut().filter(|f| f.terminal == tid) {
+                Some(f) => f.focus = true,
+                None => self.find = Some(FindBar { terminal: tid, query: String::new(), case_sensitive: false, focus: true }),
+            },
         }
+    }
+
+    fn take_req(&mut self) -> u64 {
+        self.next_req += 1;
+        self.next_req
+    }
+
+    fn run_term_search(&mut self) {
+        let req = self.take_req();
+        let Some(tl) = self.term_logs.as_mut() else { return };
+        tl.context_of = None;
+        let r = &mut tl.results;
+        (r.req, r.busy, r.error, r.highlight) = (req, true, None, None);
+        r.status = "Searching…".into();
+        let query = tl.filters.query(Some(vec![tl.terminal]), 5000, 0);
+        self.send(ClientMsg::Search { req, query });
+    }
+
+    fn run_global_search(&mut self) {
+        let req = self.take_req();
+        let terminals = self
+            .search
+            .project
+            .and_then(|pid| self.ws.project(pid))
+            .map(|p| p.terminals.iter().map(|t| t.id).collect());
+        let query = self.search.filters.query(terminals, 500, 2);
+        let r = &mut self.search.results;
+        (r.req, r.busy, r.error, r.highlight) = (req, true, None, None);
+        r.status = "Searching…".into();
+        self.send(ClientMsg::Search { req, query });
+    }
+
+    fn open_log_line(&mut self, tid: Uuid, entry: Entry) {
+        let Some(pid) = self.ws.terminal(tid).map(|(p, _)| p.id) else {
+            self.banner = Some("That terminal has been removed. Its log files are still in the host's logs folder.".into());
+            return;
+        };
+        self.search_open = false;
+        if !self.ws.project(pid).is_some_and(|p| p.open) {
+            self.send(ClientMsg::SetProjectOpen { project: pid, open: true });
+        }
+        self.select_project(pid);
+        self.select_tab(pid, tid);
+        self.log_mode.insert(tid);
+        let req = self.take_req();
+        let mut tl = match self.term_logs.take() {
+            Some(t) if t.terminal == tid => t,
+            _ => TermLogs::new(tid),
+        };
+        let r = &mut tl.results;
+        (r.req, r.busy, r.error) = (req, true, None);
+        r.highlight = Some((entry.file.clone(), entry.line_no));
+        r.scroll_to_highlight = true;
+        r.status = "Loading…".into();
+        self.send(ClientMsg::ReadLog {
+            req,
+            terminal: tid,
+            around_ms: Some(entry.ts_ms),
+            before: 300,
+            after: 300,
+            levels: vec![],
+        });
+        tl.context_of = Some(entry);
+        self.term_logs = Some(tl);
     }
 
     /// Applies a finished dialog.
@@ -369,6 +515,44 @@ impl App {
                 }
             }
             HostMsg::Error(e) => self.banner = Some(e),
+            HostMsg::SearchDone { req, outcome, elapsed_ms } => {
+                let n = outcome.hits.len();
+                let status = format!(
+                    "{n} line{}{} · {} lines scanned in {elapsed_ms} ms",
+                    if n == 1 { "" } else { "s" },
+                    if outcome.truncated { " (the newest; narrow the search to see older ones)" } else { "" },
+                    outcome.lines_scanned
+                );
+                if let Some(tl) = self.term_logs.as_mut().filter(|t| t.results.req == req) {
+                    // Oldest first, like a terminal; start at the bottom.
+                    tl.results.rows = outcome.hits.into_iter().rev().map(Row::from_hit).collect();
+                    (tl.results.busy, tl.results.status, tl.results.scroll_to_end) = (false, status, true);
+                } else if self.search.results.req == req {
+                    let r = &mut self.search.results;
+                    r.rows = outcome.hits.into_iter().map(Row::from_hit).collect();
+                    (r.busy, r.status) = (false, status);
+                }
+            }
+            HostMsg::SearchFailed { req, error } => {
+                let views = [self.term_logs.as_mut().map(|t| &mut t.results), Some(&mut self.search.results)];
+                for r in views.into_iter().flatten() {
+                    if r.req == req {
+                        (r.busy, r.error, r.status) = (false, Some(error.clone()), String::new());
+                    }
+                }
+            }
+            HostMsg::LogPage { req, terminal, window } => {
+                if let Some(tl) = self.term_logs.as_mut().filter(|t| t.results.req == req) {
+                    let n = window.entries.len();
+                    tl.results.rows = window.entries.into_iter().map(|e| Row::plain(terminal, e)).collect();
+                    tl.results.busy = false;
+                    tl.results.status = format!(
+                        "{n} lines{}{}",
+                        if window.more_before { " · earlier lines above" } else { "" },
+                        if window.more_after { " · later lines below" } else { "" }
+                    );
+                }
+            }
         }
     }
 
@@ -462,11 +646,17 @@ impl App {
         if hit(cs, Key::N) {
             self.push(Action::NewProject);
         }
+        if hit(cs, Key::F) {
+            self.push(Action::OpenSearch);
+        }
         if let Some(pid) = pid {
             if hit(cs, Key::T) {
                 self.push(Action::NewTerminal(pid));
             }
             if let Some(tid) = tid {
+                if !self.search_open && !self.log_mode.contains(&tid) && hit(Modifiers::CTRL, Key::F) {
+                    self.push(Action::OpenFind(tid));
+                }
                 if hit(cs, Key::W) {
                     self.push(Action::RemoveTerminal(pid, tid));
                 }

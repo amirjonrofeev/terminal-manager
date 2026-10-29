@@ -4,8 +4,8 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_ERROR_PATTERN: &str =
-    r"(?i)\b(error|err|fatal|crit(ical)?|fail(ed|ure)?|unhandled|exception|panic(ked)?)\b|^\s+at \S+\(";
-pub const DEFAULT_WARNING_PATTERN: &str = r"(?i)\bwarn(ing)?\b";
+    r"(?i)\b(error|err|fatal|ftl|crit(ical)?|fail(ed|ure)?|unhandled|exception|panic(ked)?)\b|^\s+at \S+\(";
+pub const DEFAULT_WARNING_PATTERN: &str = r"(?i)\b(warn(ing)?|wrn)\b";
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
@@ -87,10 +87,16 @@ mod tests {
             "   at DataMicron.EzSync.Server.Sync.Run() in C:\\src\\Sync.cs:line 42",
             "npm ERR! code ELIFECYCLE",
             "thread 'main' panicked at src/main.rs:3",
+            "2026-10-29 14:47:38.449 +05:00 [ERR] Sync failed",
+            "2026-10-29 14:47:38.449 +05:00 [FTL] Host terminated",
         ] {
             assert_eq!(c.classify(line), Level::Error, "{line}");
         }
-        for line in ["warn: Microsoft.EntityFrameworkCore[10400]", "WARNING: deprecated option"] {
+        for line in [
+            "warn: Microsoft.EntityFrameworkCore[10400]",
+            "WARNING: deprecated option",
+            "2026-10-29 14:47:38.449 +05:00 [WRN] Slow query",
+        ] {
             assert_eq!(c.classify(line), Level::Warning, "{line}");
         }
         for line in ["info: Now listening on: https://localhost:7241", "errors: 0 found (terror)", "tick 5173"] {

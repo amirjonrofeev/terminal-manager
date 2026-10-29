@@ -68,7 +68,9 @@ impl State {
             return;
         }
         if self.repainting {
-            if self.recent_set.contains(&text) {
+            // A repaint redraws each screen row on its own, so a wrapped line comes back as
+            // pieces: drop exact repeats and pieces of recently logged lines.
+            if self.recent_set.contains(&text) || self.recent.iter().any(|r| r.contains(text.as_str())) {
                 return;
             }
             // New content: the repaint is over.
@@ -201,6 +203,22 @@ mod tests {
         assert_eq!(a.feed(b"\x1b[H\x1b[2Jone\r\ntwo\r\nthree\r\n"), vec!["three"]);
         // Outside a repaint, a repeated line is real output and is kept.
         assert_eq!(a.feed(b"one\r\n"), vec!["one"]);
+    }
+
+    #[test]
+    fn repaint_of_wrapped_line_is_not_logged_as_pieces() {
+        let mut a = LineAssembler::default();
+        let long = r"Content root path: W:\DEV\datamicron\IAM.Web\DataMicron.IAM.Web";
+        assert_eq!(a.feed(format!("{long}\r\n").as_bytes()), vec![long]);
+        // Redrawn at 30 columns: one row per piece, positioned with CUP.
+        let rows: String = long
+            .as_bytes()
+            .chunks(30)
+            .enumerate()
+            .map(|(i, c)| format!("\x1b[{};1H{}", i + 1, String::from_utf8_lossy(c)))
+            .collect();
+        assert!(a.feed(format!("\x1b[2J{rows}\x1b[5;1H").as_bytes()).is_empty());
+        assert_eq!(a.feed(b"next line\r\n"), vec!["next line"]);
     }
 
     #[test]

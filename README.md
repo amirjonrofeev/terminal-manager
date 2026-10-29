@@ -29,10 +29,39 @@ Files are written by writing a temp file and renaming it over the old one. A fil
 
 For testing, `TERMINAL_MANAGER_DATA`, `TERMINAL_MANAGER_SOCKET` and `TERMINAL_MANAGER_CONFIG` point the host data, the pipe/socket name and the GUI config somewhere else.
 
+## Logs and search
+
+Every terminal's output is saved by the host, one file per day per terminal:
+
+```
+<data>\logs\<terminal id>\2026-10-29.log      (continues in 2026-10-29.1.log past the size limit)
+2026-10-29T14:47:38.449+05:00	E	fail: sync for client 4471 timed out after 30s
+```
+
+Each line has the local time it arrived, a level (`I` info, `W` warning, `E` error, `S` lines from the host such as *started*, *stopped*, *exited with code 3*) and the text with colors removed. `logs\index.json` says which project and terminal each folder belongs to.
+
+- **Logs view**: the *Logs* button above a terminal shows its saved lines, filtered by text, date range and level.
+- **Search logs** (sidebar, Ctrl+Shift+F): search all projects or one, e.g. a client id over *Yesterday* or a custom date range, errors only. Click a result to open that terminal's log at that moment, with the lines around it.
+- **Find** (Ctrl+F): highlight matches in the live screen; Enter / Shift+Enter step through them.
+- **Badges**: tabs and projects count error (red) and warning (amber) lines you haven't looked at yet.
+- **Tab icons**: each tab shows the project type, detected from the command (`dotnet`, `npm`, `cargo`, …) or the files in its folder (`*.csproj`, `package.json`, `Cargo.toml`, …).
+
+`settings.json` in the data folder:
+
+| Setting | Default | |
+| --- | --- | --- |
+| `retention_days` | 30 | Days of logs kept (0 = forever) |
+| `max_file_mb` | 200 | A day's file continues in a new part past this size |
+| `error_pattern` / `warning_pattern` | empty | Regex overriding what counts as an error / warning (empty = built-in, which understands `fail:`, `[ERR]`, `Exception`, stack traces, `warn:`, `[WRN]`, …) |
+
+The host reads settings when it starts.
+
 ## Shortcuts
 
 | Keys | Action |
 | --- | --- |
+| Ctrl+Shift+F | Search logs across terminals |
+| Ctrl+F | Find in the current terminal's output |
 | Ctrl+Shift+N | Add project |
 | Ctrl+Shift+T | New terminal |
 | Ctrl+Shift+W | Remove terminal |

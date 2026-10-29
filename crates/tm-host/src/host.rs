@@ -17,6 +17,8 @@ use uuid::Uuid;
 pub struct Client {
     pub id: u64,
     pub tx: SyncSender<HostMsg>,
+    /// The search this client is waiting for; older searches stop when it changes.
+    pub search: AtomicU64,
 }
 
 #[derive(Default)]
@@ -42,7 +44,8 @@ pub struct Host {
 
 impl Host {
     pub fn new(info: HostInfo, data_dir: PathBuf, ws: Workspace, log_settings: LogSettings) -> Arc<Self> {
-        let (classifier, problems) = Classifier::new(&log_settings.error_pattern, &log_settings.warning_pattern);
+        let (error_pattern, warning_pattern) = log_settings.patterns();
+        let (classifier, problems) = Classifier::new(error_pattern, warning_pattern);
         for p in problems {
             log::warn!("settings.json: {p}");
         }
@@ -127,7 +130,7 @@ impl Host {
 
     pub fn add_client(&self, tx: SyncSender<HostMsg>) -> Arc<Client> {
         let id = self.next_client.fetch_add(1, Ordering::Relaxed);
-        let client = Arc::new(Client { id, tx });
+        let client = Arc::new(Client { id, tx, search: AtomicU64::new(0) });
         let mut st = self.state.lock().unwrap();
         let _ = client.tx.try_send(HostMsg::Welcome(self.info.clone()));
         let _ = client.tx.try_send(HostMsg::Workspace(st.ws.clone()));
@@ -267,6 +270,46 @@ impl Host {
 
     // ---------- requests ----------
 
+    /// Runs log searches and reads off the request thread, outside the state lock.
+    pub fn handle_logs(&self, client: &Arc<Client>, msg: ClientMsg) -> Option<ClientMsg> {
+        match msg {
+            ClientMsg::Search { req, query } => {
+                client.search.store(req, Ordering::SeqCst);
+                let root = self.logs_root.clone();
+                let client = client.clone();
+                let _ = std::thread::Builder::new().name("search".into()).spawn(move || {
+                    let started = std::time::Instant::now();
+                    let cancelled = || client.search.load(Ordering::SeqCst) != req;
+                    let reply = match logs::search::search(&root, &query, &cancelled) {
+                        Ok(outcome) => {
+                            HostMsg::SearchDone { req, outcome, elapsed_ms: started.elapsed().as_millis() as u64 }
+                        }
+                        Err(_) if cancelled() => return,
+                        Err(error) => HostMsg::SearchFailed { req, error },
+                    };
+                    // Results can be large; wait for room rather than drop them.
+                    let _ = client.tx.send(reply);
+                });
+                None
+            }
+            ClientMsg::CancelSearch => {
+                client.search.store(0, Ordering::SeqCst);
+                None
+            }
+            ClientMsg::ReadLog { req, terminal, around_ms, before, after, levels } => {
+                let dir = logs::terminal_dir(&self.logs_root, terminal);
+                let client = client.clone();
+                let _ = std::thread::Builder::new().name("read-log".into()).spawn(move || {
+                    let window =
+                        logs::search::read_window(&dir, around_ms, before.min(5000) as usize, after.min(5000) as usize, &levels);
+                    let _ = client.tx.send(HostMsg::LogPage { req, terminal, window });
+                });
+                None
+            }
+            other => Some(other),
+        }
+    }
+
     pub fn handle(&self, client: &Client, msg: ClientMsg) {
         let mut st = self.state.lock().unwrap();
         let st = &mut *st;
@@ -377,6 +420,7 @@ impl Host {
                     t.resize(cols, lines);
                 }
             }
+            ClientMsg::Search { .. } | ClientMsg::CancelSearch | ClientMsg::ReadLog { .. } => {}
             ClientMsg::MarkSeen(terminal) => {
                 if let Some(t) = st.terms.get(&terminal) {
                     t.log.lock().unwrap().counts.reset();
