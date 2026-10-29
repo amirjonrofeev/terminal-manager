@@ -14,6 +14,10 @@ pub fn rollup_color(r: Rollup) -> Color32 {
 }
 
 pub fn show(app: &mut App, ui: &mut Ui) {
+    if app.ui.sidebar_collapsed {
+        collapsed(app, ui);
+        return;
+    }
     Panel::left("sidebar")
         .resizable(true)
         .default_size(240.0)
@@ -26,7 +30,10 @@ pub fn show(app: &mut App, ui: &mut Ui) {
 
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                ui.add_space(14.0);
+                ui.add_space(6.0);
+                if ui.small_button("«").on_hover_text("Collapse the sidebar (Ctrl+B)").clicked() {
+                    app.push(Action::ToggleSidebar);
+                }
                 ui.label(RichText::new("PROJECTS").size(11.0).color(DIM).extra_letter_spacing(1.0));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add_space(10.0);
@@ -170,4 +177,50 @@ fn footer(app: &mut App, ui: &mut Ui) {
             app.push(Action::StopAll(pid));
         }
     });
+}
+
+/// The sidebar minimized to a strip: one button per project (initial + status), expand on top.
+fn collapsed(app: &mut App, ui: &mut Ui) {
+    Panel::left("sidebar-collapsed")
+        .resizable(false)
+        .exact_size(46.0)
+        .frame(Frame::new().fill(SIDE).stroke(Stroke::new(1.0, LINE)))
+        .show(ui, |ui| {
+            ui.add_space(8.0);
+            ui.vertical_centered(|ui| {
+                if ui.small_button("»").on_hover_text("Expand the sidebar (Ctrl+B)").clicked() {
+                    app.push(Action::ToggleSidebar);
+                }
+                ui.add_space(6.0);
+                if ui.small_button("⌕").on_hover_text("Search logs (Ctrl+Shift+F)").clicked() {
+                    app.push(Action::OpenSearch);
+                }
+                ui.add_space(8.0);
+                let ids: Vec<uuid::Uuid> = app.ws.projects.iter().filter(|p| p.open).map(|p| p.id).collect();
+                for id in ids {
+                    let Some(project) = app.ws.project(id) else { continue };
+                    let initial: String = project.name.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
+                    let name = project.name.clone();
+                    let color = rollup_color(app.rollup(project));
+                    let (errors, _) = app.unseen(project);
+                    let selected = app.ui.active_project == Some(id);
+                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(34.0, 34.0), Sense::click());
+                    let painter = ui.painter_at(rect.expand(2.0));
+                    painter.rect_filled(rect, CornerRadius::same(8), if selected { ROW_SELECTED } else { BG });
+                    if resp.hovered() {
+                        painter.rect_stroke(rect, CornerRadius::same(8), Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
+                    }
+                    painter.text(rect.center(), Align2::CENTER_CENTER, initial, FontId::proportional(15.0), FG);
+                    dot(&painter, rect.right_bottom() - egui::vec2(5.0, 5.0), color);
+                    if errors > 0 {
+                        painter.circle_filled(rect.right_top() + egui::vec2(-5.0, 5.0), 4.0, BAD);
+                    }
+                    let hover = if errors > 0 { format!("{name} · {errors} unseen errors") } else { name };
+                    if resp.on_hover_text(hover).clicked() {
+                        app.push(Action::SelectProject(id));
+                    }
+                    ui.add_space(4.0);
+                }
+            });
+        });
 }

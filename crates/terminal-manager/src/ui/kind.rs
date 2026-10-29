@@ -7,6 +7,7 @@ use tm_core::model::{Project, TerminalSpec};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
+    ClaudeCode,
     DotNet,
     Node,
     Rust,
@@ -20,6 +21,7 @@ pub enum Kind {
 impl Kind {
     pub fn label(self) -> &'static str {
         match self {
+            Kind::ClaudeCode => "Claude Code",
             Kind::DotNet => ".NET",
             Kind::Node => "Node.js",
             Kind::Rust => "Rust",
@@ -35,6 +37,7 @@ impl Kind {
         let p = program.trim_start_matches(".\\").trim_start_matches("./").to_ascii_lowercase();
         let p = p.strip_suffix(".exe").or_else(|| p.strip_suffix(".cmd")).unwrap_or(&p);
         Some(match p {
+            "claude" => Kind::ClaudeCode,
             "dotnet" => Kind::DotNet,
             "npm" | "npx" | "node" | "yarn" | "pnpm" | "bun" | "deno" | "nodemon" | "ng" | "vite" | "next" => Kind::Node,
             "cargo" | "rustc" => Kind::Rust,
@@ -94,6 +97,16 @@ impl Kind {
             painter.text(c, Align2::CENTER_CENTER, s, FontId::proportional(size), color);
         };
         match self {
+            Kind::ClaudeCode => {
+                // A coral spark: rays around the center.
+                let color = Color32::from_rgb(0xd9, 0x77, 0x57);
+                for i in 0..8 {
+                    let a = std::f32::consts::FRAC_PI_4 * i as f32;
+                    let (inner, outer) = (2.0, if i % 2 == 0 { 7.5 } else { 5.5 });
+                    let dir = Vec2::new(a.cos(), a.sin());
+                    painter.line_segment([c + dir * inner, c + dir * outer], Stroke::new(2.0, color));
+                }
+            }
             Kind::DotNet => {
                 painter.rect_filled(rect, CornerRadius::same(3), Color32::from_rgb(0x51, 0x2b, 0xd4));
                 text("N", 11.0, Color32::WHITE);
@@ -153,6 +166,7 @@ mod tests {
     fn detects_from_command() {
         let p = Project { root: std::env::temp_dir(), ..Default::default() };
         assert_eq!(Kind::detect(&p, &spec("dotnet run --project api")), Kind::DotNet);
+        assert_eq!(Kind::detect(&p, &spec("claude --continue")), Kind::ClaudeCode);
         assert_eq!(Kind::detect(&p, &spec("npm.cmd start")), Kind::Node);
         assert_eq!(Kind::detect(&p, &spec("cargo watch -x test")), Kind::Rust);
         assert_eq!(Kind::detect(&p, &spec("py -m uvicorn app:main")), Kind::Python);

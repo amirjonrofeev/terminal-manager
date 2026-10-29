@@ -18,17 +18,37 @@ pub enum ClientEvent {
     Denied(String),
 }
 
+/// Which host a connection is for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Target {
+    /// The service if one is running and reachable, else the per-user host.
+    Main,
+    /// Always the per-user host (dev terminals run as the signed-in user).
+    User,
+}
+
 pub struct HostClient {
     out: Sender<ClientMsg>,
     events: Receiver<ClientEvent>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for HostClient {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
 }
 
 impl HostClient {
-    pub fn start(ctx: egui::Context) -> Self {
+    pub fn start(ctx: egui::Context, target: Target) -> Self {
         let (out, out_rx) = mpsc::channel();
         let (ev_tx, events) = mpsc::channel();
-        let _ = std::thread::Builder::new().name("host-connection".into()).spawn(move || run(out_rx, ev_tx, ctx));
-        Self { out, events }
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+        let _ = std::thread::Builder::new()
+            .name(format!("host-connection-{target:?}"))
+            .spawn(move || run(target, out_rx, ev_tx, ctx, thread_stop));
+        Self { out, events, stop }
     }
 
     /// Queues a message; dropped silently while disconnected (the app re-syncs on reconnect).
@@ -45,18 +65,18 @@ impl HostClient {
     }
 }
 
-fn run(out_rx: Receiver<ClientMsg>, events: Sender<ClientEvent>, ctx: egui::Context) {
+fn run(target: Target, out_rx: Receiver<ClientMsg>, events: Sender<ClientEvent>, ctx: egui::Context, stop: Arc<AtomicBool>) {
     let notify = |e: ClientEvent| {
         let _ = events.send(e);
         ctx.request_repaint();
     };
     let mut last_spawn: Option<Instant> = None;
     let mut last_error = String::new();
-    loop {
-        match connect_any() {
+    while !stop.load(Ordering::SeqCst) {
+        match connect_any(target) {
             Ok(stream) => {
                 last_error.clear();
-                let reason = session(stream, &out_rx, &notify);
+                let reason = session(stream, &out_rx, &notify, &stop);
                 notify(ClientEvent::Disconnected(reason));
             }
             Err(Failure::Denied(msg)) => {
@@ -90,8 +110,12 @@ enum Failure {
     Denied(String),
 }
 
-fn connect_any() -> Result<Stream, Failure> {
-    for (mode, socket) in paths::client_socket_candidates() {
+fn connect_any(target: Target) -> Result<Stream, Failure> {
+    let candidates = match target {
+        Target::Main => paths::client_socket_candidates(),
+        Target::User => vec![(HostMode::User, paths::socket_name(HostMode::User))],
+    };
+    for (mode, socket) in candidates {
         match ipc::connect(&socket) {
             Ok(s) => return Ok(s),
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && mode == HostMode::Service => {
@@ -106,7 +130,7 @@ fn connect_any() -> Result<Stream, Failure> {
 }
 
 /// Runs one connection until it fails; returns the reason.
-fn session(stream: Stream, out_rx: &Receiver<ClientMsg>, notify: &impl Fn(ClientEvent)) -> String {
+fn session(stream: Stream, out_rx: &Receiver<ClientMsg>, notify: &impl Fn(ClientEvent), stop: &AtomicBool) -> String {
     let stream = Arc::new(stream);
     if let Err(e) = ipc::write_frame(&mut &*stream, &ClientMsg::Hello { version: PROTOCOL_VERSION }) {
         return format!("Lost the connection to the host: {e}");
@@ -133,6 +157,9 @@ fn session(stream: Stream, out_rx: &Receiver<ClientMsg>, notify: &impl Fn(Client
     });
 
     loop {
+        if stop.load(Ordering::SeqCst) {
+            return "closed".into();
+        }
         while let Ok(msg) = msg_rx.try_recv() {
             match msg {
                 HostMsg::Welcome(info) => notify(ClientEvent::Connected(info)),
@@ -208,4 +235,33 @@ fn spawn_host() -> std::io::Result<()> {
         cmd.process_group(0);
     }
     cmd.spawn().map(|_| ())
+}
+
+/// Whether VS Code's `code` command is on PATH.
+pub fn editor_available() -> bool {
+    tm_core::shell::find_in_path("code").is_some()
+}
+
+/// Opens a folder in VS Code (`code <folder>`), as the signed-in user, in their session.
+pub fn open_in_editor(folder: &std::path::Path) -> Result<(), String> {
+    if !editor_available() {
+        return Err("VS Code's `code` command isn't on PATH. In VS Code, run \"Shell Command: Install 'code' command in PATH\" (or reinstall with \"Add to PATH\").".into());
+    }
+    let mut cmd = if cfg!(windows) {
+        // `code` is a .cmd script on Windows, so it needs cmd.exe.
+        let mut c = std::process::Command::new("cmd");
+        c.arg("/c").arg("code").arg(folder);
+        c
+    } else {
+        let mut c = std::process::Command::new("code");
+        c.arg(folder);
+        c
+    };
+    cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd.spawn().map(|_| ()).map_err(|e| format!("Could not start VS Code: {e}"))
 }

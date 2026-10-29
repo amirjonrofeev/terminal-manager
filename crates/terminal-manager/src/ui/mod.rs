@@ -1,5 +1,6 @@
 //! Look and feel shared by the UI modules.
 
+pub mod dev;
 pub mod dialogs;
 pub mod kind;
 pub mod logs;

@@ -236,7 +236,7 @@ impl Host {
         let ids: Vec<Uuid> = st
             .ws
             .project(pid)
-            .map(|p| p.terminals.iter().filter(|t| t.auto_start).map(|t| t.id).collect())
+            .map(|p| p.terminals.iter().filter(|t| t.auto_start && !t.dev).map(|t| t.id).collect())
             .unwrap_or_default();
         for tid in ids {
             if !st.terms.get(&tid).is_some_and(|t| t.state.status.is_running()) {
@@ -247,6 +247,22 @@ impl Host {
 
     fn project_terminals(st: &State, pid: Uuid) -> Vec<Uuid> {
         st.ws.project(pid).map(|p| p.terminals.iter().map(|t| t.id).collect()).unwrap_or_default()
+    }
+
+    /// The service terminals of a project (Start all / Stop all leave dev terminals alone).
+    fn service_terminals(st: &State, pid: Uuid) -> Vec<Uuid> {
+        st.ws.project(pid).map(|p| p.terminals.iter().filter(|t| !t.dev).map(|t| t.id).collect()).unwrap_or_default()
+    }
+
+    /// Dev terminals run as the signed-in user; a service (another account, no desktop) refuses them.
+    fn refuses_dev(&self, client: &Client, dev: bool) -> bool {
+        let refuse = dev && self.info.mode == tm_core::paths::HostMode::Service;
+        if refuse {
+            let _ = client.tx.try_send(HostMsg::Error(
+                "Dev terminals run as you in your own session, not in the Windows service.".into(),
+            ));
+        }
+        refuse
     }
 
     fn on_run_event(&self, tid: Uuid, generation: u64, event: RunEvent) {
@@ -316,6 +332,9 @@ impl Host {
         match msg {
             ClientMsg::Hello { .. } => {}
             ClientMsg::UpsertProject(project) => {
+                if self.refuses_dev(client, project.terminals.iter().any(|t| t.dev)) {
+                    return;
+                }
                 let pid = project.id;
                 match st.ws.project_mut(pid) {
                     Some(existing) => {
@@ -360,6 +379,9 @@ impl Host {
                 self.workspace_changed(st);
             }
             ClientMsg::UpsertTerminal { project, spec, index } => {
+                if self.refuses_dev(client, spec.dev) {
+                    return;
+                }
                 let Some(p) = st.ws.project_mut(project) else {
                     let _ = client.tx.try_send(HostMsg::Error("That project no longer exists.".into()));
                     return;
@@ -389,14 +411,14 @@ impl Host {
             ClientMsg::Start(tid) => self.start(st, tid),
             ClientMsg::Stop(tid) => Self::stop(st, tid),
             ClientMsg::StartAll(pid) => {
-                for tid in Self::project_terminals(st, pid) {
+                for tid in Self::service_terminals(st, pid) {
                     if !st.terms.get(&tid).is_some_and(|t| t.state.status.is_running()) {
                         self.start(st, tid);
                     }
                 }
             }
             ClientMsg::StopAll(pid) => {
-                for tid in Self::project_terminals(st, pid) {
+                for tid in Self::service_terminals(st, pid) {
                     Self::stop(st, tid);
                 }
             }

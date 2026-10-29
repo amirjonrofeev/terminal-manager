@@ -166,6 +166,7 @@ impl HostTerminal {
             self.fail("No shell program set. Edit the terminal and choose a shell.".into());
             return;
         }
+        self.log.lock().unwrap().set_enabled(spec.log);
         let described = format!("started {} {} in {}", sh.program, sh.args.join(" "), cwd.display());
         let output = Output { hub: self.hub.clone(), log: self.log.clone() };
         match spawn(id, self.generation, sh.program.clone(), sh.args, cwd, shell::merge_env(&project.env, &spec.env), self.size, output, events, lagging) {

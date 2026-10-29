@@ -41,6 +41,8 @@ pub struct TermLog {
     failed: bool,
     /// The command the host typed into the shell, while its echo may still arrive.
     echo: Option<(String, Instant)>,
+    /// Off for terminals whose output shouldn't be logged (dev terminals).
+    enabled: bool,
 }
 
 /// How long after start the shell's echo of the typed command is expected.
@@ -56,7 +58,12 @@ impl TermLog {
             counts: Arc::default(),
             failed: false,
             echo: None,
+            enabled: true,
         }
+    }
+
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
     }
 
     /// The host typed `command` into the shell. Shells echo it, often several times while
@@ -83,6 +90,9 @@ impl TermLog {
 
     /// Logs the complete lines in a chunk of output.
     pub fn feed(&mut self, bytes: &[u8]) {
+        if !self.enabled {
+            return;
+        }
         let lines = self.assembler.feed(bytes);
         if lines.is_empty() {
             return;
@@ -111,6 +121,9 @@ impl TermLog {
 
     /// A line from the host itself (started, exited, stopped). Errors count toward the badge.
     pub fn system(&mut self, level: Level, text: &str) {
+        if !self.enabled {
+            return;
+        }
         self.finish();
         if level == Level::Error {
             self.counts.bump(level);

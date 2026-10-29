@@ -71,7 +71,32 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         let pid = project.id;
         let tid = app.active_tab(project);
 
-        Panel::top("tabs").frame(Frame::new().fill(SIDE)).show(ui, |ui| tab_bar(app, ui, pid, tid));
+        if app.dev_enabled() {
+            let width = ui.available_width();
+            let panel = match app.ui.dev_side {
+                crate::app::DevSide::Left => Panel::left("dev-left"),
+                crate::app::DevSide::Right => Panel::right("dev-right"),
+            };
+            panel
+                .resizable(true)
+                .default_size(width * 0.45)
+                .size_range(280.0..=(width - 280.0).max(300.0))
+                .frame(Frame::new().fill(BG).stroke(Stroke::new(1.0, LINE)))
+                .show(ui, |ui| super::dev::panel(app, ui, pid));
+        }
+
+        Panel::top("tabs").frame(Frame::new().fill(SIDE)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.add_space(8.0);
+                    let on = app.dev_enabled();
+                    if ui.selectable_label(on, "Dev").on_hover_text("Show or hide the dev panel (Claude Code, shells)").clicked() {
+                        app.push(Action::SetDevEnabled(!on));
+                    }
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| tab_bar(app, ui, pid, tid));
+                });
+            });
+        });
         Panel::bottom("statusbar")
             .frame(Frame::new().fill(SIDE).inner_margin(Margin::symmetric(14, 4)).stroke(Stroke::new(1.0, LINE)))
             .show(ui, |ui| status_bar(app, ui, pid));
@@ -353,18 +378,25 @@ fn terminal_area(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid) {
 
 fn status_bar(app: &App, ui: &mut Ui, pid: Uuid) {
     let root = app.ws.project(pid).map(|p| p.root.display().to_string()).unwrap_or_default();
+    // The host label is laid out first so the folder path truncates instead of overlapping it.
     ui.horizontal(|ui| {
-        ui.label(RichText::new(root).monospace().size(11.0).color(DIM));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let (text, hover) = match &app.connection {
                 Connection::Connected(info) => {
                     let kind = match info.mode {
-                        tm_core::paths::HostMode::Service => "the service",
-                        tm_core::paths::HostMode::User => "the background host",
+                        tm_core::paths::HostMode::Service => "Windows service",
+                        tm_core::paths::HostMode::User => "Background host",
                     };
                     (
-                        RichText::new(format!("Running in {kind} · closing this window leaves them running")).color(DIM),
-                        format!("Host {} (pid {}), data in {}", info.version, info.pid, info.data_dir),
+                        RichText::new(kind).color(DIM),
+                        format!(
+                            "Terminals run in the {}, so closing this window leaves them running.
+Host {} (pid {}), data in {}",
+                            kind.to_lowercase(),
+                            info.version,
+                            info.pid,
+                            info.data_dir
+                        ),
                     )
                 }
                 _ => (RichText::new("Not connected").color(BAD), String::new()),
@@ -373,6 +405,9 @@ fn status_bar(app: &App, ui: &mut Ui, pid: Uuid) {
             if !hover.is_empty() {
                 label.on_hover_text(hover);
             }
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.add(egui::Label::new(RichText::new(root).monospace().size(11.0).color(DIM)).truncate());
+            });
         });
     });
 }

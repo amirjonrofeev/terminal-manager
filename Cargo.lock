@@ -3780,6 +3780,7 @@ dependencies = [
  "polling",
  "rpassword",
  "serde",
+ "serde_json",
  "tm-core",
  "uuid",
  "widestring",

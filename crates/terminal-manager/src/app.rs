@@ -1,7 +1,7 @@
 //! App state and the actions the UI can trigger. The host owns projects and processes; the app
 //! mirrors its workspace, renders terminal screens, and keeps per-user UI state.
 
-use crate::client::{ClientEvent, HostClient};
+use crate::client::{ClientEvent, HostClient, Target};
 use crate::term::Screen;
 use crate::ui;
 use crate::ui::dialogs::{ConfirmAction, Dialog};
@@ -27,6 +27,14 @@ pub struct WindowState {
     pub maximized: bool,
 }
 
+/// Which side of the project view the dev panel tiles on.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DevSide {
+    #[default]
+    Left,
+    Right,
+}
+
 /// Per-user view state, saved in `ui.json`.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(default)]
@@ -34,6 +42,27 @@ pub struct UiState {
     pub active_project: Option<Uuid>,
     pub active_tab: HashMap<Uuid, Uuid>,
     pub window: Option<WindowState>,
+    /// Dev panel on/off; `None` = on, except when connected to the Windows service.
+    pub dev_enabled: Option<bool>,
+    pub dev_side: DevSide,
+    /// Selected dev terminal per project.
+    pub dev_tab: HashMap<Uuid, Uuid>,
+    pub sidebar_collapsed: bool,
+}
+
+/// What a new dev terminal runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DevPreset {
+    ClaudeCode,
+    Shell,
+    Custom,
+}
+
+/// Which host connection a message came from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Conn {
+    Main,
+    Dev,
 }
 
 pub enum Connection {
@@ -73,6 +102,13 @@ pub enum Action {
     OpenLogLine(Uuid, Entry),
     /// Open (or focus) the find bar over a terminal's live screen.
     OpenFind(Uuid),
+    NewDevTerminal(Uuid, DevPreset),
+    SelectDevTab(Uuid, Uuid),
+    /// Open the project folder in VS Code (`code <folder>`).
+    OpenInEditor(Uuid),
+    SetDevEnabled(bool),
+    SetDevSide(DevSide),
+    ToggleSidebar,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -91,6 +127,14 @@ pub struct App {
     pub ui: UiState,
     client: HostClient,
     attached: HashSet<Uuid>,
+    /// Dev terminals live in the per-user host; this mirrors its workspace (dev terminals only).
+    pub dev_ws: Workspace,
+    pub dev_connection: Connection,
+    dev_client: Option<HostClient>,
+    attached_dev: HashSet<Uuid>,
+    /// Give the dev terminal keyboard focus next frame.
+    pub focus_dev: bool,
+    ctx: egui::Context,
     /// Terminals we asked the host to reset unseen counts for, until it confirms.
     pending_seen: HashSet<Uuid>,
     ui_path: PathBuf,
@@ -128,8 +172,14 @@ impl App {
             states: HashMap::new(),
             connection: Connection::Connecting,
             ui: ui_state.value,
-            client: HostClient::start(cc.egui_ctx.clone()),
+            client: HostClient::start(cc.egui_ctx.clone(), Target::Main),
             attached: HashSet::new(),
+            dev_ws: Workspace::default(),
+            dev_connection: Connection::Connecting,
+            dev_client: None,
+            attached_dev: HashSet::new(),
+            focus_dev: false,
+            ctx: cc.egui_ctx.clone(),
             pending_seen: HashSet::new(),
             ui_path,
             dirty: false,
@@ -152,6 +202,75 @@ impl App {
 
     pub fn is_connected(&self) -> bool {
         matches!(self.connection, Connection::Connected(_))
+    }
+
+    /// Whether the dev panel is on. Off by default when connected to the Windows service, so
+    /// servers don't start a per-user host unless someone turns it on.
+    pub fn dev_enabled(&self) -> bool {
+        match (self.ui.dev_enabled, &self.connection) {
+            (Some(on), _) => on,
+            (None, Connection::Connected(info)) => info.mode != tm_core::paths::HostMode::Service,
+            _ => false,
+        }
+    }
+
+    pub fn dev_connected(&self) -> bool {
+        matches!(self.dev_connection, Connection::Connected(_))
+    }
+
+    /// A project's dev terminals (from the per-user host).
+    pub fn dev_terminals(&self, pid: Uuid) -> Vec<TerminalSpec> {
+        self.dev_ws.project(pid).map(|p| p.terminals.clone()).unwrap_or_default()
+    }
+
+    pub fn active_dev_tab(&self, pid: Uuid) -> Option<Uuid> {
+        let terms = self.dev_ws.project(pid).map(|p| &p.terminals[..]).unwrap_or(&[]);
+        self.ui
+            .dev_tab
+            .get(&pid)
+            .copied()
+            .filter(|id| terms.iter().any(|t| t.id == *id))
+            .or_else(|| terms.first().map(|t| t.id))
+    }
+
+    fn is_dev(&self, tid: Uuid) -> bool {
+        self.dev_ws.terminal(tid).is_some()
+    }
+
+    /// The host connection that owns a terminal.
+    fn send_for(&self, tid: Uuid, msg: ClientMsg) {
+        match &self.dev_client {
+            Some(dev) if self.is_dev(tid) => dev.send(msg),
+            _ => self.client.send(msg),
+        }
+    }
+
+    fn send_dev(&self, msg: ClientMsg) {
+        if let Some(dev) = &self.dev_client {
+            dev.send(msg);
+        }
+    }
+
+    /// Makes sure the per-user host has the project (folder, env) for its dev terminals.
+    fn ensure_dev_project(&self, pid: Uuid) {
+        if let Some(p) = self.ws.project(pid) {
+            let meta = Project { terminals: Vec::new(), open: true, ..p.clone() };
+            self.send_dev(ClientMsg::UpsertProject(meta));
+        }
+    }
+
+    /// Starts or stops the dev connection to follow the setting.
+    fn sync_dev_client(&mut self) {
+        let on = self.dev_enabled();
+        if on && self.dev_client.is_none() {
+            self.dev_client = Some(HostClient::start(self.ctx.clone(), Target::User));
+            self.dev_connection = Connection::Connecting;
+        } else if !on && self.dev_client.is_some() {
+            self.dev_client = None;
+            self.dev_ws = Workspace::default();
+            self.attached_dev.clear();
+            self.sync_terminals();
+        }
     }
 
     pub fn active_project(&self) -> Option<&Project> {
@@ -198,7 +317,8 @@ impl App {
     /// The project type shown on a terminal's tab (detection is cached until its command or folder changes).
     pub fn kind_of(&mut self, pid: Uuid, tid: Uuid) -> crate::ui::kind::Kind {
         use crate::ui::kind::Kind;
-        let Some((project, spec)) = self.ws.project(pid).and_then(|p| p.terminal(tid).map(|t| (p, t))) else {
+        let found = self.ws.project(pid).and_then(|p| p.terminal(tid).map(|t| (p, t)));
+        let Some((project, spec)) = found.or_else(|| self.dev_ws.terminal(tid)) else {
             return Kind::Shell;
         };
         let key = Kind::cache_key(project, spec);
@@ -300,7 +420,8 @@ impl App {
                 }
             }
             Action::EditTerminal(pid, tid) => {
-                if let Some(spec) = self.ws.project(pid).and_then(|p| p.terminal(tid)) {
+                let spec = self.ws.project(pid).and_then(|p| p.terminal(tid)).or_else(|| self.dev_ws.terminal(tid).map(|(_, t)| t));
+                if let Some(spec) = spec {
                     self.dialog = Some(Dialog::terminal(pid, spec.clone(), false));
                 }
             }
@@ -317,7 +438,8 @@ impl App {
                 }
             }
             Action::RemoveTerminal(pid, tid) => {
-                if let Some(spec) = self.ws.project(pid).and_then(|p| p.terminal(tid)) {
+                let spec = self.ws.project(pid).and_then(|p| p.terminal(tid)).or_else(|| self.dev_ws.terminal(tid).map(|(_, t)| t));
+                if let Some(spec) = spec {
                     self.dialog = Some(Dialog::confirm(
                         format!("Remove terminal \"{}\"?", spec.name),
                         "The process is stopped and the terminal is removed from this project.".into(),
@@ -327,10 +449,14 @@ impl App {
                 }
             }
             Action::Start(tid) => {
-                self.send(ClientMsg::Start(tid));
-                self.focus_terminal = true;
+                if self.is_dev(tid) {
+                    self.focus_dev = true;
+                } else {
+                    self.focus_terminal = true;
+                }
+                self.send_for(tid, ClientMsg::Start(tid));
             }
-            Action::Stop(tid) => self.send(ClientMsg::Stop(tid)),
+            Action::Stop(tid) => self.send_for(tid, ClientMsg::Stop(tid)),
             Action::NextTab(delta) => {
                 if let Some(p) = self.active_project()
                     && !p.terminals.is_empty()
@@ -368,6 +494,57 @@ impl App {
             }
             Action::GlobalSearch => self.run_global_search(),
             Action::OpenLogLine(tid, entry) => self.open_log_line(tid, entry),
+            Action::NewDevTerminal(pid, preset) => {
+                let (name, command) = match preset {
+                    DevPreset::ClaudeCode => ("Claude Code", "claude"),
+                    DevPreset::Shell => ("shell", ""),
+                    DevPreset::Custom => ("dev terminal", ""),
+                };
+                let spec = TerminalSpec {
+                    name: name.into(),
+                    command: command.into(),
+                    auto_start: false,
+                    dev: true,
+                    log: false,
+                    ..Default::default()
+                };
+                if preset == DevPreset::Custom {
+                    self.dialog = Some(Dialog::terminal(pid, spec, true));
+                } else {
+                    let id = spec.id;
+                    self.ensure_dev_project(pid);
+                    self.send_dev(ClientMsg::UpsertTerminal { project: pid, spec, index: None });
+                    self.send_dev(ClientMsg::Start(id));
+                    self.ui.dev_tab.insert(pid, id);
+                    self.focus_dev = true;
+                    self.mark_dirty();
+                }
+            }
+            Action::SelectDevTab(pid, tid) => {
+                self.ui.dev_tab.insert(pid, tid);
+                self.focus_dev = true;
+                self.mark_dirty();
+            }
+            Action::OpenInEditor(pid) => {
+                if let Some(p) = self.ws.project(pid)
+                    && let Err(e) = crate::client::open_in_editor(&p.root)
+                {
+                    self.banner = Some(e);
+                }
+            }
+            Action::SetDevEnabled(on) => {
+                self.ui.dev_enabled = Some(on);
+                self.mark_dirty();
+                self.sync_dev_client();
+            }
+            Action::SetDevSide(side) => {
+                self.ui.dev_side = side;
+                self.mark_dirty();
+            }
+            Action::ToggleSidebar => {
+                self.ui.sidebar_collapsed = !self.ui.sidebar_collapsed;
+                self.mark_dirty();
+            }
             Action::OpenFind(tid) => match self.find.as_mut().filter(|f| f.terminal == tid) {
                 Some(f) => f.focus = true,
                 None => self.find = Some(FindBar { terminal: tid, query: String::new(), case_sensitive: false, focus: true }),
@@ -444,9 +621,24 @@ impl App {
         match dialog {
             Dialog::Project { draft, is_new } => {
                 let id = draft.id;
+                if self.dev_ws.project(id).is_some() {
+                    let meta = Project { terminals: Vec::new(), open: true, ..draft.clone() };
+                    self.send_dev(ClientMsg::UpsertProject(meta));
+                }
                 self.send(ClientMsg::UpsertProject(draft));
                 if is_new {
                     self.select_project(id);
+                }
+            }
+            Dialog::Terminal { project, draft, is_new } if draft.dev => {
+                let id = draft.id;
+                self.ensure_dev_project(project);
+                self.send_dev(ClientMsg::UpsertTerminal { project, spec: draft, index: None });
+                if is_new {
+                    self.send_dev(ClientMsg::Start(id));
+                    self.ui.dev_tab.insert(project, id);
+                    self.focus_dev = true;
+                    self.mark_dirty();
                 }
             }
             Dialog::Terminal { project, draft, is_new } => {
@@ -458,9 +650,14 @@ impl App {
                 }
             }
             Dialog::Confirm { action, .. } => match action {
-                ConfirmAction::RemoveProject(id) => self.send(ClientMsg::RemoveProject(id)),
+                ConfirmAction::RemoveProject(id) => {
+                    if self.dev_ws.project(id).is_some() {
+                        self.send_dev(ClientMsg::RemoveProject(id));
+                    }
+                    self.send(ClientMsg::RemoveProject(id));
+                }
                 ConfirmAction::RemoveTerminal(project, terminal) => {
-                    self.send(ClientMsg::RemoveTerminal { project, terminal })
+                    self.send_for(terminal, ClientMsg::RemoveTerminal { project, terminal })
                 }
             },
         }
@@ -470,30 +667,50 @@ impl App {
 
     fn pump_host(&mut self) {
         while let Some(event) = self.client.try_recv() {
-            match event {
-                ClientEvent::Connected(info) => {
-                    self.connection = Connection::Connected(info);
-                    // Fresh connection: every terminal needs a new replay.
-                    self.attached.clear();
-                }
-                ClientEvent::Disconnected(reason) => {
-                    self.connection = Connection::Disconnected(reason);
-                    self.attached.clear();
-                }
-                ClientEvent::Denied(reason) => {
-                    self.connection = Connection::Denied(reason);
-                    self.attached.clear();
-                }
-                ClientEvent::Msg(msg) => self.handle_host(msg),
+            self.on_event(Conn::Main, event);
+        }
+        while let Some(event) = self.dev_client.as_ref().and_then(|c| c.try_recv()) {
+            self.on_event(Conn::Dev, event);
+        }
+    }
+
+    fn on_event(&mut self, conn: Conn, event: ClientEvent) {
+        let state = match event {
+            ClientEvent::Connected(info) => Connection::Connected(info),
+            ClientEvent::Disconnected(reason) => Connection::Disconnected(reason),
+            ClientEvent::Denied(reason) => Connection::Denied(reason),
+            ClientEvent::Msg(msg) => return self.handle_host(conn, msg),
+        };
+        // Any change of connection means every terminal needs a fresh replay.
+        match conn {
+            Conn::Main => {
+                self.connection = state;
+                self.attached.clear();
+            }
+            Conn::Dev => {
+                self.dev_connection = state;
+                self.attached_dev.clear();
             }
         }
     }
 
-    fn handle_host(&mut self, msg: HostMsg) {
+    fn handle_host(&mut self, conn: Conn, msg: HostMsg) {
         match msg {
-            HostMsg::Welcome(info) => self.connection = Connection::Connected(info),
-            HostMsg::Workspace(ws) => {
-                self.ws = ws;
+            HostMsg::Welcome(info) => match conn {
+                Conn::Main => self.connection = Connection::Connected(info),
+                Conn::Dev => self.dev_connection = Connection::Connected(info),
+            },
+            // Each view only shows its own kind of terminal, even when both connections reach
+            // the same per-user host.
+            HostMsg::Workspace(mut ws) => {
+                let keep_dev = conn == Conn::Dev;
+                for p in ws.projects.iter_mut() {
+                    p.terminals.retain(|t| t.dev == keep_dev);
+                }
+                match conn {
+                    Conn::Main => self.ws = ws,
+                    Conn::Dev => self.dev_ws = ws,
+                }
                 self.sync_terminals();
             }
             HostMsg::State(state) => {
@@ -556,17 +773,27 @@ impl App {
         }
     }
 
-    /// Attaches to every terminal in the workspace and drops screens for removed ones.
+    /// Attaches to every terminal of both workspaces and drops screens for removed ones.
     fn sync_terminals(&mut self) {
-        let ids: HashSet<Uuid> = self.ws.projects.iter().flat_map(|p| p.terminals.iter().map(|t| t.id)).collect();
-        self.screens.retain(|id, _| ids.contains(id));
-        self.states.retain(|id, _| ids.contains(id));
-        self.attached.retain(|id| ids.contains(id));
-        for id in ids {
+        let ids = |ws: &Workspace| -> HashSet<Uuid> { ws.projects.iter().flat_map(|p| p.terminals.iter().map(|t| t.id)).collect() };
+        let (main_ids, dev_ids) = (ids(&self.ws), ids(&self.dev_ws));
+        self.screens.retain(|id, _| main_ids.contains(id) || dev_ids.contains(id));
+        self.states.retain(|id, _| main_ids.contains(id) || dev_ids.contains(id));
+        self.attached.retain(|id| main_ids.contains(id));
+        self.attached_dev.retain(|id| dev_ids.contains(id));
+        for id in main_ids {
             if self.attached.insert(id) {
                 let sender = self.client.sender();
                 self.screens.entry(id).or_insert_with(|| Screen::new(id, sender));
                 self.send(ClientMsg::Attach(id));
+            }
+        }
+        if let Some(dev) = &self.dev_client {
+            for id in dev_ids {
+                if self.attached_dev.insert(id) {
+                    self.screens.entry(id).or_insert_with(|| Screen::new(id, dev.sender()));
+                    dev.send(ClientMsg::Attach(id));
+                }
             }
         }
         if self.active_project().is_none() {
@@ -649,6 +876,9 @@ impl App {
         if hit(cs, Key::F) {
             self.push(Action::OpenSearch);
         }
+        if hit(Modifiers::CTRL, Key::B) {
+            self.push(Action::ToggleSidebar);
+        }
         if let Some(pid) = pid {
             if hit(cs, Key::T) {
                 self.push(Action::NewTerminal(pid));
@@ -680,6 +910,7 @@ pub fn uptime(started_at_ms: Option<i64>) -> Option<String> {
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.sync_dev_client();
         self.pump_host();
         self.track_window(ctx);
         if self.states.values().any(|s| s.status.is_running()) {
@@ -695,6 +926,7 @@ impl eframe::App for App {
         ui::main_area::show(self, ui);
         ui::dialogs::show(self, &ctx);
         self.focus_terminal = false;
+        self.focus_dev = false;
         for action in std::mem::take(&mut self.actions) {
             self.apply(action);
         }

@@ -56,12 +56,21 @@ Each line has the local time it arrived, a level (`I` info, `W` warning, `E` err
 
 The host reads settings when it starts.
 
+## Dev panel
+
+For working on a project, not just running it: a panel tiled beside the service terminals (left by default; **⇄** moves it right, **✕** or the **Dev** button hides it).
+
+- **+ → Claude Code / Shell / Custom…** starts a dev terminal in the project folder; **VS Code** opens the folder in VS Code.
+- Dev terminals run **as you, in your own background host**: they get your PATH, your Claude Code login and your desktop (so `code .` opens a window). They keep running when you close the window, aren't written to the logs, aren't part of Start all, and don't auto-start after a reboot.
+- The Windows service never runs dev terminals. When the app is connected to the service the panel is **off by default** (so servers don't start a per-user host); turn it on with **Dev** if you want it there too.
+
 ## Shortcuts
 
 | Keys | Action |
 | --- | --- |
 | Ctrl+Shift+F | Search logs across terminals |
 | Ctrl+F | Find in the current terminal's output |
+| Ctrl+B | Collapse / expand the sidebar |
 | Ctrl+Shift+N | Add project |
 | Ctrl+Shift+T | New terminal |
 | Ctrl+Shift+W | Remove terminal |

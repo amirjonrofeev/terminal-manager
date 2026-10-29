@@ -95,6 +95,11 @@ pub struct TerminalSpec {
     pub cwd: String,
     pub env: Vec<EnvVar>,
     pub auto_start: bool,
+    /// A developer's terminal (Claude Code, a shell) shown in the dev panel. Dev terminals run
+    /// in the user's own host, never in the Windows service, and are not part of Start all.
+    pub dev: bool,
+    /// Write this terminal's output to the log files.
+    pub log: bool,
 }
 
 impl Default for TerminalSpec {
@@ -107,6 +112,8 @@ impl Default for TerminalSpec {
             cwd: String::new(),
             env: Vec::new(),
             auto_start: true,
+            dev: false,
+            log: true,
         }
     }
 }
