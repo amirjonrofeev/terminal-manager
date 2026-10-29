@@ -30,10 +30,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
 
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                ui.add_space(6.0);
-                if ui.small_button("«").on_hover_text("Collapse the sidebar (Ctrl+B)").clicked() {
-                    app.push(Action::ToggleSidebar);
-                }
+                ui.add_space(14.0);
                 ui.label(RichText::new("PROJECTS").size(11.0).color(DIM).extra_letter_spacing(1.0));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add_space(10.0);
@@ -168,30 +165,40 @@ fn project_row(app: &mut App, ui: &mut Ui, id: uuid::Uuid) {
 }
 
 fn footer(app: &mut App, ui: &mut Ui) {
-    let Some(pid) = app.active_project().map(|p| p.id) else { return };
+    let pid = app.active_project().map(|p| p.id);
     ui.horizontal(|ui| {
-        if ui.button("Start all").on_hover_text("Start every terminal in this project").clicked() {
-            app.push(Action::StartAll(pid));
+        if ui.button("«").on_hover_text("Collapse the sidebar (Ctrl+B)").clicked() {
+            app.push(Action::ToggleSidebar);
         }
-        if ui.button("Stop all").clicked() {
-            app.push(Action::StopAll(pid));
+        if let Some(pid) = pid {
+            if ui.button("Start all").on_hover_text("Start every terminal in this project").clicked() {
+                app.push(Action::StartAll(pid));
+            }
+            if ui.button("Stop all").clicked() {
+                app.push(Action::StopAll(pid));
+            }
         }
     });
 }
 
-/// The sidebar minimized to a strip: one button per project (initial + status), expand on top.
+/// The sidebar minimized to a strip: one button per project (initial + status), expand at the bottom.
 fn collapsed(app: &mut App, ui: &mut Ui) {
     Panel::left("sidebar-collapsed")
         .resizable(false)
         .exact_size(46.0)
         .frame(Frame::new().fill(SIDE).stroke(Stroke::new(1.0, LINE)))
         .show(ui, |ui| {
+            Panel::bottom("sidebar-collapsed-footer")
+                .frame(Frame::new().fill(SIDE).inner_margin(Margin::symmetric(0, 10)))
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        if ui.button("»").on_hover_text("Expand the sidebar (Ctrl+B)").clicked() {
+                            app.push(Action::ToggleSidebar);
+                        }
+                    });
+                });
             ui.add_space(8.0);
             ui.vertical_centered(|ui| {
-                if ui.small_button("»").on_hover_text("Expand the sidebar (Ctrl+B)").clicked() {
-                    app.push(Action::ToggleSidebar);
-                }
-                ui.add_space(6.0);
                 if ui.small_button("⌕").on_hover_text("Search logs (Ctrl+Shift+F)").clicked() {
                     app.push(Action::OpenSearch);
                 }

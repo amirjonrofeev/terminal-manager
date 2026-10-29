@@ -82,36 +82,8 @@ pub fn panel(app: &mut App, ui: &mut Ui, pid: Uuid) {
 }
 
 fn header(app: &mut App, ui: &mut Ui, pid: Uuid, terms: &[TerminalSpec], active: Option<Uuid>) {
+    // Buttons on the right are laid out first; the tabs scroll in the space that is left.
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.add_space(10.0);
-        ui.label(RichText::new("DEV").size(11.0).color(ACCENT).extra_letter_spacing(1.0));
-        ui.add_space(8.0);
-        for t in terms {
-            dev_tab(app, ui, pid, t, active == Some(t.id));
-        }
-        ui.add_space(4.0);
-        ui.menu_button(RichText::new("+").size(16.0).color(DIM), |ui| {
-            let claude = ui.add_enabled(claude_available(), egui::Button::new("Claude Code"));
-            let claude = if claude_available() {
-                claude.on_hover_text("Runs `claude` in the project folder")
-            } else {
-                claude.on_disabled_hover_text("The `claude` command isn't on PATH")
-            };
-            if claude.clicked() {
-                app.push(Action::NewDevTerminal(pid, DevPreset::ClaudeCode));
-                ui.close();
-            }
-            if ui.button("Shell").clicked() {
-                app.push(Action::NewDevTerminal(pid, DevPreset::Shell));
-                ui.close();
-            }
-            if ui.button("Custom…").on_hover_text("Choose the command, shell and folder").clicked() {
-                app.push(Action::NewDevTerminal(pid, DevPreset::Custom));
-                ui.close();
-            }
-        });
-
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             ui.add_space(6.0);
@@ -128,7 +100,48 @@ fn header(app: &mut App, ui: &mut Ui, pid: Uuid, terms: &[TerminalSpec], active:
             if editor_available() && ui.small_button("VS Code").on_hover_text("Open the project folder in VS Code").clicked() {
                 app.push(Action::OpenInEditor(pid));
             }
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.add_space(10.0);
+                ui.label(RichText::new("DEV").size(11.0).color(ACCENT).extra_letter_spacing(1.0));
+                ui.add_space(8.0);
+                egui::ScrollArea::horizontal()
+                    .id_salt("dev-tabs")
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            for t in terms {
+                                dev_tab(app, ui, pid, t, active == Some(t.id));
+                            }
+                            ui.add_space(4.0);
+                            add_menu(app, ui, pid);
+                        });
+                    });
+            });
         });
+    });
+}
+
+fn add_menu(app: &mut App, ui: &mut Ui, pid: Uuid) {
+    ui.menu_button(RichText::new("+").size(16.0).color(DIM), |ui| {
+        let claude = ui.add_enabled(claude_available(), egui::Button::new("Claude Code"));
+        let claude = if claude_available() {
+            claude.on_hover_text("Runs `claude` in the project folder")
+        } else {
+            claude.on_disabled_hover_text("The `claude` command isn't on PATH")
+        };
+        if claude.clicked() {
+            app.push(Action::NewDevTerminal(pid, DevPreset::ClaudeCode));
+            ui.close();
+        }
+        if ui.button("Shell").clicked() {
+            app.push(Action::NewDevTerminal(pid, DevPreset::Shell));
+            ui.close();
+        }
+        if ui.button("Custom…").on_hover_text("Choose the command, shell and folder").clicked() {
+            app.push(Action::NewDevTerminal(pid, DevPreset::Custom));
+            ui.close();
+        }
     });
 }
 
