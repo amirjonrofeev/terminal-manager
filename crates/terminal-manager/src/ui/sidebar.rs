@@ -1,6 +1,6 @@
 //! Left panel: the project list.
 
-use super::{dot, BG, DIM, FG, IDLE, LINE, OK, ROW_SELECTED, SIDE, WARN, BAD};
+use super::{dot, pill, pill_width, BAD, BG, DIM, FG, IDLE, LINE, OK, ROW_SELECTED, SIDE, WARN};
 use crate::app::{Action, App, Rollup};
 use egui::{Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, Panel, RichText, ScrollArea, Sense, Stroke, Ui};
 
@@ -74,6 +74,7 @@ fn project_row(app: &mut App, ui: &mut Ui, id: uuid::Uuid) {
     let running = app.running_count(project);
     let total = project.terminals.len();
     let color = rollup_color(app.rollup(project));
+    let unseen = app.unseen(project);
     let name = project.name.clone();
     let path = project.root.display().to_string();
 
@@ -90,7 +91,18 @@ fn project_row(app: &mut App, ui: &mut Ui, id: uuid::Uuid) {
     dot(&painter, egui::pos2(row.min.x + 14.0, row.center().y), if open { color } else { IDLE.gamma_multiply(0.6) });
     painter.text(egui::pos2(row.min.x + 28.0, row.min.y + 7.0), Align2::LEFT_TOP, &name, FontId::proportional(14.0), text_color);
     let count = format!("{running}/{total}");
-    painter.text(egui::pos2(row.max.x - 10.0, row.min.y + 9.0), Align2::RIGHT_TOP, count, FontId::monospace(11.0), DIM);
+    let count_rect =
+        painter.text(egui::pos2(row.max.x - 10.0, row.min.y + 9.0), Align2::RIGHT_TOP, count, FontId::monospace(11.0), DIM);
+    let badge = match unseen {
+        (e, _) if e > 0 => Some((e, BAD)),
+        (_, w) if w > 0 => Some((w, WARN)),
+        _ => None,
+    };
+    if let Some((n, color)) = badge {
+        let text = if n > 999 { "999+".to_string() } else { n.to_string() };
+        let x = count_rect.min.x - 6.0 - pill_width(&text);
+        pill(&painter, egui::pos2(x, count_rect.center().y), &text, color);
+    }
     // Path, clipped to the row so long paths don't spill out.
     painter.text(
         egui::pos2(row.min.x + 28.0, row.min.y + 25.0),

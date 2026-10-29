@@ -10,9 +10,11 @@ chrono.workspace = true
 directories.workspace = true
 interprocess.workspace = true
 postcard.workspace = true
+regex = "1"
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+vte = "0.15"
 
 [target.'cfg(windows)'.dependencies]
 widestring = "1.0.2"

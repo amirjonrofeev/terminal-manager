@@ -11,10 +11,12 @@ mod server;
 #[cfg(windows)]
 pub mod service;
 mod terminal;
+mod termlog;
 
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::sync::Arc;
+use tm_core::logs::LogSettings;
 use tm_core::model::Workspace;
 use tm_core::paths::{self, HostMode};
 use tm_core::protocol::HostInfo;
@@ -66,10 +68,26 @@ pub fn start(mode: HostMode, echo_log: bool) -> io::Result<Arc<Host>> {
         data_dir: data_dir.display().to_string(),
     };
     log::info!("host {} started ({mode:?}) on {socket}, data in {}", info.version, data_dir.display());
-    let host = Host::new(info, data_dir, ws);
+    let settings = load_settings(&data_dir);
+    let host = Host::new(info, data_dir, ws, settings);
     let serving = host.clone();
     std::thread::Builder::new().name("accept".into()).spawn(move || server::serve(serving, listener))?;
     Ok(host)
+}
+
+/// Reads `settings.json`, writing the defaults the first time so they can be edited.
+fn load_settings(data_dir: &std::path::Path) -> LogSettings {
+    let path = data_dir.join("settings.json");
+    let loaded = persist::load::<LogSettings>(&path);
+    if let Some(w) = &loaded.warning {
+        log::warn!("{w}");
+    }
+    if !path.exists()
+        && let Err(e) = persist::save(&path, &loaded.value)
+    {
+        log::warn!("writing {}: {e}", path.display());
+    }
+    loaded.value
 }
 
 /// Runs a host until the process is killed.

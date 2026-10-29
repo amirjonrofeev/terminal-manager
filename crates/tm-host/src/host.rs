@@ -1,9 +1,12 @@
 //! Host state: the saved workspace, the live terminals, and connected clients.
 
 use crate::terminal::{HostTerminal, RunEvent};
+use crate::termlog::TermLog;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+use tm_core::logs::{self, Classifier, IndexEntry, LogIndex, LogSettings};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex, Weak};
 use tm_core::model::Workspace;
@@ -26,6 +29,9 @@ struct State {
 pub struct Host {
     pub info: HostInfo,
     store: PathBuf,
+    logs_root: PathBuf,
+    log_settings: LogSettings,
+    classifier: Arc<Classifier>,
     state: Mutex<State>,
     /// Terminals each client fell behind on; its writer thread re-attaches them. Kept outside
     /// `state` because it is written from PTY threads that hold a terminal lock.
@@ -35,10 +41,17 @@ pub struct Host {
 }
 
 impl Host {
-    pub fn new(info: HostInfo, data_dir: PathBuf, ws: Workspace) -> Arc<Self> {
+    pub fn new(info: HostInfo, data_dir: PathBuf, ws: Workspace, log_settings: LogSettings) -> Arc<Self> {
+        let (classifier, problems) = Classifier::new(&log_settings.error_pattern, &log_settings.warning_pattern);
+        for p in problems {
+            log::warn!("settings.json: {p}");
+        }
         let host = Arc::new_cyclic(|me| Host {
             info,
             store: data_dir.join("workspace.json"),
+            logs_root: logs::logs_root(&data_dir),
+            log_settings,
+            classifier: Arc::new(classifier),
             state: Mutex::new(State { ws, ..Default::default() }),
             lagging: Mutex::default(),
             next_client: AtomicU64::new(1),
@@ -48,14 +61,66 @@ impl Host {
             let mut st = host.state.lock().unwrap();
             let ids: Vec<Uuid> = st.ws.projects.iter().flat_map(|p| p.terminals.iter().map(|t| t.id)).collect();
             for id in ids {
-                st.terms.insert(id, HostTerminal::new(id));
+                st.terms.insert(id, host.new_terminal(id));
             }
+            host.write_log_index(&st);
             let open: Vec<Uuid> = st.ws.projects.iter().filter(|p| p.open).map(|p| p.id).collect();
             for pid in open {
                 host.auto_start(&mut st, pid);
             }
         }
+        let me = Arc::downgrade(&host);
+        let _ = std::thread::Builder::new().name("counts".into()).spawn(move || {
+            // Error/warning counts change on PTY threads; publish them from here so those
+            // threads never take the state lock.
+            while let Some(host) = me.upgrade() {
+                host.publish_counts();
+                drop(host);
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        });
         host
+    }
+
+    fn new_terminal(&self, id: Uuid) -> HostTerminal {
+        let dir = logs::terminal_dir(&self.logs_root, id);
+        HostTerminal::new(id, TermLog::new(dir, &self.log_settings, self.classifier.clone()))
+    }
+
+    fn publish_counts(&self) {
+        let mut st = self.state.lock().unwrap();
+        let mut changed = Vec::new();
+        for (id, t) in st.terms.iter_mut() {
+            let counts = t.log.lock().unwrap().counts.clone();
+            if counts.changed.swap(false, Ordering::AcqRel) {
+                t.state.unseen_errors = counts.errors.load(Ordering::Relaxed);
+                t.state.unseen_warnings = counts.warnings.load(Ordering::Relaxed);
+                changed.push(*id);
+            }
+        }
+        for id in changed {
+            Self::broadcast_state(&st, id);
+        }
+    }
+
+    /// Keeps `logs/index.json` naming every terminal folder, removed terminals included.
+    fn write_log_index(&self, st: &State) {
+        let path = self.logs_root.join("index.json");
+        let mut index = persist::load::<LogIndex>(&path).value;
+        let before = index.clone();
+        for p in &st.ws.projects {
+            for t in &p.terminals {
+                index.terminals.insert(
+                    t.id,
+                    IndexEntry { project: p.name.clone(), terminal: t.name.clone(), project_id: Some(p.id) },
+                );
+            }
+        }
+        if index != before
+            && let Err(e) = persist::save(&path, &index)
+        {
+            log::warn!("writing {}: {e}", path.display());
+        }
     }
 
     // ---------- clients ----------
@@ -119,6 +184,7 @@ impl Host {
     }
 
     fn workspace_changed(&self, st: &State) {
+        self.write_log_index(st);
         if let Err(e) = persist::save(&self.store, &st.ws) {
             log::error!("saving {}: {e}", self.store.display());
             Self::broadcast(st, HostMsg::Error(format!("The host could not save its workspace: {e}")));
@@ -133,7 +199,11 @@ impl Host {
         let (project, spec) = (project.clone(), spec.clone());
         let me = self.me.clone();
         let me2 = self.me.clone();
-        let term = st.terms.entry(tid).or_insert_with(|| HostTerminal::new(tid));
+        if !st.terms.contains_key(&tid) {
+            let t = self.new_terminal(tid);
+            st.terms.insert(tid, t);
+        }
+        let term = st.terms.get_mut(&tid).expect("inserted above");
         term.start(
             &project,
             &spec,
@@ -214,7 +284,8 @@ impl Host {
                     None => {
                         let open = project.open;
                         for t in &project.terminals {
-                            st.terms.insert(t.id, HostTerminal::new(t.id));
+                            let term = self.new_terminal(t.id);
+                            st.terms.insert(t.id, term);
                             Self::broadcast_state(st, t.id);
                         }
                         st.ws.projects.push(project);
@@ -259,7 +330,8 @@ impl Host {
                     }
                 }
                 if !st.terms.contains_key(&tid) {
-                    st.terms.insert(tid, HostTerminal::new(tid));
+                    let term = self.new_terminal(tid);
+                    st.terms.insert(tid, term);
                     Self::broadcast_state(st, tid);
                 }
                 self.workspace_changed(st);
@@ -303,6 +375,11 @@ impl Host {
             ClientMsg::Resize { terminal, cols, lines } => {
                 if let Some(t) = st.terms.get_mut(&terminal) {
                     t.resize(cols, lines);
+                }
+            }
+            ClientMsg::MarkSeen(terminal) => {
+                if let Some(t) = st.terms.get(&terminal) {
+                    t.log.lock().unwrap().counts.reset();
                 }
             }
         }

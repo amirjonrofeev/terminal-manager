@@ -78,6 +78,8 @@ pub struct App {
     pub ui: UiState,
     client: HostClient,
     attached: HashSet<Uuid>,
+    /// Terminals we asked the host to reset unseen counts for, until it confirms.
+    pending_seen: HashSet<Uuid>,
     ui_path: PathBuf,
     dirty: bool,
     last_save: Instant,
@@ -98,6 +100,7 @@ impl App {
             ui: ui_state.value,
             client: HostClient::start(cc.egui_ctx.clone()),
             attached: HashSet::new(),
+            pending_seen: HashSet::new(),
             ui_path,
             dirty: false,
             last_save: Instant::now(),
@@ -152,6 +155,22 @@ impl App {
             (0, _) if errors => Rollup::Bad,
             (0, _) => Rollup::Idle,
             _ => Rollup::Warn,
+        }
+    }
+
+    /// Unseen errors and warnings across a project's terminals.
+    pub fn unseen(&self, project: &Project) -> (u32, u32) {
+        project.terminals.iter().fold((0, 0), |(e, w), t| {
+            let s = self.states.get(&t.id);
+            (e + s.map_or(0, |s| s.unseen_errors), w + s.map_or(0, |s| s.unseen_warnings))
+        })
+    }
+
+    /// The user is looking at this terminal: clear its badge.
+    pub fn mark_seen(&mut self, terminal: Uuid) {
+        let unseen = self.states.get(&terminal).is_some_and(|s| s.unseen_errors > 0 || s.unseen_warnings > 0);
+        if unseen && self.pending_seen.insert(terminal) {
+            self.send(ClientMsg::MarkSeen(terminal));
         }
     }
 
@@ -332,6 +351,9 @@ impl App {
                 self.sync_terminals();
             }
             HostMsg::State(state) => {
+                if state.unseen_errors == 0 && state.unseen_warnings == 0 {
+                    self.pending_seen.remove(&state.terminal);
+                }
                 self.states.insert(state.terminal, state);
             }
             HostMsg::Replay { terminal, bytes } => {

@@ -2,6 +2,7 @@
 //! and the host/GUI protocol.
 
 pub mod ipc;
+pub mod logs;
 pub mod model;
 pub mod palette;
 pub mod paths;

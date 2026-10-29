@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Bump on any change to these types; mismatched peers refuse to talk.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum Status {
@@ -45,11 +45,14 @@ pub struct TerminalState {
     /// Unix time in milliseconds when the current run started.
     pub started_at_ms: Option<i64>,
     pub title: Option<String>,
+    /// Error and warning lines logged since someone last looked at this terminal.
+    pub unseen_errors: u32,
+    pub unseen_warnings: u32,
 }
 
 impl TerminalState {
     pub fn new(terminal: Uuid) -> Self {
-        Self { terminal, status: Status::NotStarted, started_at_ms: None, title: None }
+        Self { terminal, status: Status::NotStarted, started_at_ms: None, title: None, unseen_errors: 0, unseen_warnings: 0 }
     }
 }
 
@@ -82,6 +85,8 @@ pub enum ClientMsg {
     Detach(Uuid),
     Input { terminal: Uuid, bytes: Vec<u8> },
     Resize { terminal: Uuid, cols: u16, lines: u16 },
+    /// The user has seen this terminal: reset its unseen error/warning counts.
+    MarkSeen(Uuid),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

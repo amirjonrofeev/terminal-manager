@@ -102,6 +102,37 @@ fn host_runs_terminals_and_replays_output() {
     });
     assert!(dir.join("workspace.json").exists(), "workspace saved");
 
+    // The run is in today's log: timestamped lines, the output, and the exit marked as an error.
+    let log_dir = dir.join("logs").join(tid.to_string());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let text = loop {
+        let text = std::fs::read_dir(&log_dir)
+            .map(|d| d.flatten().map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).collect::<String>())
+            .unwrap_or_default();
+        if text.contains("exited with code 2") || Instant::now() > deadline {
+            break text;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let lines: Vec<(&str, &str, &str)> = text
+        .lines()
+        .map(|l| {
+            let mut p = l.splitn(3, '\t');
+            (p.next().unwrap(), p.next().unwrap_or(""), p.next().unwrap_or(""))
+        })
+        .collect();
+    assert!(lines.iter().all(|(ts, _, _)| ts.len() >= 29 && ts.contains('T')), "timestamps: {text}");
+    assert!(lines.iter().any(|(_, lvl, t)| *lvl == "S" && t.starts_with("started ")), "start line: {text}");
+    assert!(lines.iter().any(|(_, lvl, t)| *lvl == "I" && *t == "hello-from-host"), "output line: {text}");
+    assert!(lines.iter().any(|(_, lvl, t)| *lvl == "E" && *t == "exited with code 2"), "exit line: {text}");
+    assert!(!text.contains('\x1b'), "no escape sequences in the log: {text:?}");
+    assert!(dir.join("logs").join("index.json").exists(), "log index");
+
+    // The failed exit is counted for the badge, and MarkSeen clears it.
+    a.wait_for("an unseen error", |m| matches!(m, HostMsg::State(s) if s.terminal == tid && s.unseen_errors >= 1));
+    a.send(ClientMsg::MarkSeen(tid));
+    a.wait_for("errors cleared", |m| matches!(m, HostMsg::State(s) if s.terminal == tid && s.unseen_errors == 0));
+
     // A second viewer attaching later gets the earlier output replayed.
     let b = Conn::open(&socket);
     b.send(ClientMsg::Attach(tid));

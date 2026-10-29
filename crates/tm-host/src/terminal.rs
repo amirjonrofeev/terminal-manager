@@ -1,6 +1,7 @@
 //! One terminal on the host: its PTY run, its status, and the hub that fans output out to viewers.
 
 use crate::pty_loop::{EventLoop, EventLoopSender, Msg, OutputHook};
+use crate::termlog::TermLog;
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::test::TermSize;
@@ -12,6 +13,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
+use tm_core::logs::Level;
 use tm_core::model::{Project, TerminalSpec};
 use tm_core::palette;
 use tm_core::protocol::{HostMsg, Status, TerminalState};
@@ -107,16 +109,18 @@ impl Drop for Run {
 pub struct HostTerminal {
     pub state: TerminalState,
     pub hub: Arc<Mutex<Hub>>,
+    pub log: Arc<Mutex<TermLog>>,
     run: Option<Run>,
     generation: u64,
     size: (u16, u16),
 }
 
 impl HostTerminal {
-    pub fn new(id: Uuid) -> Self {
+    pub fn new(id: Uuid, log: TermLog) -> Self {
         Self {
             state: TerminalState::new(id),
             hub: Arc::default(),
+            log: Arc::new(Mutex::new(log)),
             run: None,
             generation: 0,
             size: DEFAULT_SIZE,
@@ -162,10 +166,14 @@ impl HostTerminal {
             self.fail("No shell program set. Edit the terminal and choose a shell.".into());
             return;
         }
-        match spawn(id, self.generation, sh.program.clone(), sh.args, cwd, shell::merge_env(&project.env, &spec.env), self.size, self.hub.clone(), events, lagging) {
+        let described = format!("started {} {} in {}", sh.program, sh.args.join(" "), cwd.display());
+        let output = Output { hub: self.hub.clone(), log: self.log.clone() };
+        match spawn(id, self.generation, sh.program.clone(), sh.args, cwd, shell::merge_env(&project.env, &spec.env), self.size, output, events, lagging) {
             Ok(run) => {
+                self.log_system(Level::System, &described);
                 let command = spec.command.trim();
                 if !command.is_empty() {
+                    self.log.lock().unwrap().expect_echo(command);
                     let _ = run.sender.send(Msg::Input(Cow::Owned(format!("{command}\r").into_bytes())));
                 }
                 self.run = Some(run);
@@ -176,8 +184,13 @@ impl HostTerminal {
         }
     }
 
+    fn log_system(&self, level: Level, text: &str) {
+        self.log.lock().unwrap().system(level, text);
+    }
+
     fn fail(&mut self, msg: String) {
         log::warn!("terminal {}: {msg}", self.state.terminal);
+        self.log_system(Level::Error, &msg);
         self.run = None;
         self.state.status = Status::Failed(msg);
         self.state.started_at_ms = None;
@@ -190,6 +203,7 @@ impl HostTerminal {
         self.run = None;
         if self.state.status.is_running() {
             self.state.status = Status::Stopped;
+            self.log_system(Level::System, "stopped");
         }
         self.state.started_at_ms = None;
     }
@@ -207,6 +221,11 @@ impl HostTerminal {
                 self.state.status = Status::Exited(code);
                 self.state.started_at_ms = None;
                 self.run = None;
+                match code {
+                    Some(0) => self.log_system(Level::System, "exited with code 0"),
+                    Some(c) => self.log_system(Level::Error, &format!("exited with code {c}")),
+                    None => self.log_system(Level::System, "exited"),
+                }
             }
             RunEvent::Title(t) => self.state.title = Some(t),
         }
@@ -234,6 +253,12 @@ impl HostTerminal {
     }
 }
 
+/// Where a run's output goes: the replay hub (viewers) and the log.
+struct Output {
+    hub: Arc<Mutex<Hub>>,
+    log: Arc<Mutex<TermLog>>,
+}
+
 fn window_size((cols, lines): (u16, u16)) -> WindowSize {
     WindowSize { num_lines: lines, num_cols: cols, cell_width: 8, cell_height: 16 }
 }
@@ -247,7 +272,7 @@ fn spawn(
     cwd: PathBuf,
     env: Vec<(String, String)>,
     size: (u16, u16),
-    hub: Arc<Mutex<Hub>>,
+    output: Output,
     events: impl Fn(u64, RunEvent) + Send + 'static,
     lagging: impl Fn(Vec<u64>) + Send + 'static,
 ) -> std::io::Result<Run> {
@@ -270,10 +295,11 @@ fn spawn(
     let term = Arc::new(FairMutex::new(Term::new(config, &TermSize::new(size.0 as usize, size.1 as usize), proxy.clone())));
 
     let on_output: OutputHook = Box::new(move |bytes: &[u8]| {
-        let lag = hub.lock().unwrap().push(id, bytes);
+        let lag = output.hub.lock().unwrap().push(id, bytes);
         if !lag.is_empty() {
             lagging(lag);
         }
+        output.log.lock().unwrap().feed(bytes);
     });
     let event_loop = EventLoop::new(term.clone(), proxy, pty, true, on_output)?;
     let sender = event_loop.channel();

@@ -1,6 +1,6 @@
 //! Right side: tab bar, toolbar, terminal and status bar for the selected project.
 
-use super::{dot, ACCENT, BAD, BG, DIM, FG, IDLE, LINE, OK, SIDE, WARN};
+use super::{dot, pill, pill_width, ACCENT, BAD, BG, DIM, FG, IDLE, LINE, OK, SIDE, WARN};
 use crate::app::{Action, App, Connection};
 use tm_core::protocol::Status;
 use crate::term::TerminalView;
@@ -115,14 +115,20 @@ fn welcome(app: &mut App, ui: &mut Ui) {
 
 fn tab_bar(app: &mut App, ui: &mut Ui, pid: Uuid, active: Option<Uuid>) {
     let Some(project) = app.ws.project(pid) else { return };
-    let tabs: Vec<(Uuid, String, Status)> =
-        project.terminals.iter().map(|t| (t.id, t.name.clone(), app.status(t.id))).collect();
+    let tabs: Vec<(Uuid, String, Status, (u32, u32))> = project
+        .terminals
+        .iter()
+        .map(|t| {
+            let st = app.state(t.id);
+            (t.id, t.name.clone(), st.status, (st.unseen_errors, st.unseen_warnings))
+        })
+        .collect();
 
     ScrollArea::horizontal().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            for (tid, name, status) in tabs {
-                tab(app, ui, pid, tid, &name, &status, active == Some(tid));
+            for (tid, name, status, unseen) in tabs {
+                tab(app, ui, pid, tid, &name, &status, unseen, active == Some(tid));
             }
             ui.add_space(4.0);
             let plus = ui.add(egui::Button::new(RichText::new("+").size(16.0).color(DIM)).frame(false).min_size(egui::vec2(36.0, 36.0)));
@@ -133,7 +139,8 @@ fn tab_bar(app: &mut App, ui: &mut Ui, pid: Uuid, active: Option<Uuid>) {
     });
 }
 
-fn tab(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid, name: &str, status: &Status, selected: bool) {
+#[allow(clippy::too_many_arguments)]
+fn tab(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid, name: &str, status: &Status, unseen: (u32, u32), selected: bool) {
     let font = FontId::proportional(13.0);
     let code = match status {
         Status::Exited(Some(c)) if *c != 0 => Some(c.to_string()),
@@ -142,7 +149,14 @@ fn tab(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid, name: &str, status: &St
     };
     let text_w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(name.to_string(), font.clone(), FG).size().x);
     let code_w = code.as_ref().map_or(0.0, |c| c.len() as f32 * 7.0 + 8.0);
-    let width = 14.0 + 10.0 + 8.0 + text_w + code_w + 14.0;
+    // Badge: unseen errors (red) or, failing that, unseen warnings (amber).
+    let badge = match unseen {
+        (e, _) if e > 0 => Some((badge_text(e), BAD)),
+        (_, w) if w > 0 => Some((badge_text(w), WARN)),
+        _ => None,
+    };
+    let badge_w = badge.as_ref().map_or(0.0, |(t, _)| pill_width(t) + 8.0);
+    let width = 14.0 + 10.0 + 8.0 + text_w + code_w + badge_w + 14.0;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 36.0), Sense::click());
     let painter = ui.painter_at(rect);
 
@@ -169,6 +183,10 @@ fn tab(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid, name: &str, status: &St
             FontId::monospace(11.0),
             BAD,
         );
+    }
+    if let Some((text, color)) = &badge {
+        let x = rect.min.x + 30.0 + text_w + code_w + 8.0;
+        pill(&painter, egui::pos2(x, rect.center().y), text, *color);
     }
 
     if resp.clicked() {
@@ -256,6 +274,9 @@ fn toolbar(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid) {
 fn terminal_area(app: &mut App, ui: &mut Ui, pid: Uuid, tid: Uuid) {
     let interactive = app.dialog.is_none() && app.is_connected();
     let focus = app.focus_terminal && interactive;
+    if interactive && ui.ctx().input(|i| i.focused) {
+        app.mark_seen(tid);
+    }
     let status = app.status(tid);
     let has_run = !matches!(status, Status::NotStarted | Status::Failed(_));
     if has_run && let Some(screen) = app.screens.get_mut(&tid) {
@@ -314,4 +335,8 @@ fn status_bar(app: &App, ui: &mut Ui, pid: Uuid) {
             }
         });
     });
+}
+
+fn badge_text(n: u32) -> String {
+    if n > 999 { "999+".into() } else { n.to_string() }
 }

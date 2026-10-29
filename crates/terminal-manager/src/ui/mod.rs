@@ -113,3 +113,18 @@ pub fn dot(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
     }
     painter.circle_filled(center, 4.0, color);
 }
+
+/// Width of a count pill drawn by [`pill`].
+pub fn pill_width(text: &str) -> f32 {
+    (text.len() as f32 * 7.0 + 10.0).max(18.0)
+}
+
+/// A small rounded count badge whose left edge is at `left_center`.
+pub fn pill(painter: &egui::Painter, left_center: egui::Pos2, text: &str, color: Color32) {
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(left_center.x, left_center.y - 8.0),
+        egui::vec2(pill_width(text), 16.0),
+    );
+    painter.rect_filled(rect, egui::CornerRadius::same(8), color.gamma_multiply(0.25));
+    painter.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::monospace(11.0), color);
+}

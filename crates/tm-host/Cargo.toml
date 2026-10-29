@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 tm-core.workspace = true
 alacritty_terminal.workspace = true
+chrono.workspace = true
 interprocess.workspace = true
 log.workspace = true
 polling.workspace = true
