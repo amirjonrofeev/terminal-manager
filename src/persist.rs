@@ -9,12 +9,12 @@ pub fn config_dir() -> PathBuf {
     directories::BaseDirs::new()
         .map(|d| d.config_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("project-manager")
+        .join("terminal-manager")
 }
 
-/// `PROJECT_MANAGER_WORKSPACE` overrides the location (handy for testing a separate workspace).
+/// `TERMINAL_MANAGER_WORKSPACE` overrides the location (handy for testing a separate workspace).
 pub fn workspace_path() -> PathBuf {
-    match std::env::var_os("PROJECT_MANAGER_WORKSPACE") {
+    match std::env::var_os("TERMINAL_MANAGER_WORKSPACE") {
         Some(p) if !p.is_empty() => PathBuf::from(p),
         _ => config_dir().join("workspace.json"),
     }

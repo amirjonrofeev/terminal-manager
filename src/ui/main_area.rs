@@ -69,7 +69,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
 fn welcome(app: &mut App, ui: &mut Ui) {
     ui.vertical_centered(|ui| {
         ui.add_space(ui.available_height() / 4.0);
-        ui.label(RichText::new("Project Manager").size(26.0).color(FG));
+        ui.label(RichText::new("Terminal Manager").size(26.0).color(FG));
         ui.add_space(6.0);
         ui.label(
             RichText::new("Add a project folder, give it the terminals you run there, and they come back after every restart.")

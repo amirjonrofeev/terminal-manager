@@ -1,4 +1,4 @@
-# Project Manager
+# Terminal Manager
 
 A small native app (Rust, egui, alacritty_terminal) for Windows and Linux that remembers your projects and the terminals you run in them. Close it or reboot, open it again, and every open project comes back with its auto-start commands running.
 
@@ -12,10 +12,10 @@ A small native app (Rust, egui, alacritty_terminal) for Windows and Linux that r
 
 `workspace.json` is saved in:
 
-- Windows: `%APPDATA%\project-manager\`
-- Linux: `~/.config/project-manager/`
+- Windows: `%APPDATA%\terminal-manager\`
+- Linux: `~/.config/terminal-manager/`
 
-It is written at most once a second and on quit, by writing a temp file and renaming it over the old one. If the file can't be parsed, it is kept as `workspace.json.bak` and the app starts with an empty workspace. Set `PROJECT_MANAGER_WORKSPACE=<path>` to use a different file.
+It is written at most once a second and on quit, by writing a temp file and renaming it over the old one. If the file can't be parsed, it is kept as `workspace.json.bak` and the app starts with an empty workspace. Set `TERMINAL_MANAGER_WORKSPACE=<path>` to use a different file.
 
 ## Shortcuts
 
@@ -32,7 +32,7 @@ It is written at most once a second and on quit, by writing a temp file and rena
 ## Build
 
 ```sh
-cargo build --release   # target/release/project-manager(.exe)
+cargo build --release   # target/release/terminal-manager(.exe)
 cargo test
 ```
 

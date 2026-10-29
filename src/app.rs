@@ -218,7 +218,7 @@ impl App {
                 if let Some(p) = self.ws.project(id) {
                     self.dialog = Some(Dialog::confirm(
                         format!("Remove {}?", p.name),
-                        "Its terminals are stopped and removed from Project Manager. Files on disk are not touched."
+                        "Its terminals are stopped and removed from Terminal Manager. Files on disk are not touched."
                             .into(),
                         "Remove project",
                         ConfirmAction::RemoveProject(id),
@@ -463,7 +463,7 @@ impl eframe::App for App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 if self.dialog.is_none() {
                     self.dialog = Some(Dialog::confirm(
-                        "Quit Project Manager?".into(),
+                        "Quit Terminal Manager?".into(),
                         format!(
                             "{running} terminal{} still running and will be stopped. Your workspace is saved, and auto-start terminals run again next time you open the app.",
                             if running == 1 { " is" } else { "s are" }

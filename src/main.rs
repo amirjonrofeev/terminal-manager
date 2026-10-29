@@ -14,7 +14,7 @@ fn main() -> eframe::Result {
     let loaded = persist::load(&store_path);
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("Project Manager")
+        .with_title("Terminal Manager")
         .with_inner_size([1200.0, 760.0])
         .with_min_inner_size([640.0, 400.0]);
     if let Some(w) = loaded.workspace.window {
@@ -26,7 +26,7 @@ fn main() -> eframe::Result {
 
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native(
-        "Project Manager",
+        "Terminal Manager",
         options,
         Box::new(move |cc| Ok(Box::new(app::App::new(cc, store_path, loaded)))),
     )
